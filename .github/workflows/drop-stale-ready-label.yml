@@ -27,7 +27,6 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  actions: read
   issues: read
   pull-requests: write
 
@@ -47,20 +46,16 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
-          RUN_ID: ${{ github.run_id }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
           COMMENTED_AT: ${{ github.event.comment.updated_at }}
           LABEL: ready to approve
         run: |
           set -euo pipefail
           export LC_ALL=C
-          # A comment carries its own time (its last edit). A pull request event (a push,
-          # an edit, a draft, a reopen) doesn't, so use the run's: it is created when the
-          # event arrives, and the job may start later.
-          if [ -n "$COMMENTED_AT" ]; then
-            changed=$COMMENTED_AT
-          else
-            changed=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .created_at)
-          fi
+          # When the change happened: a comment's last edit, or for a pull request
+          # event the pull request's updated_at, which the event sets. Neither known
+          # means now, so an older label comes off.
+          changed=${COMMENTED_AT:-${PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}}
           labeled=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
             --jq '.[] | select(.event == "labeled" and .label.name == env.LABEL) | .created_at' | sort | tail -n 1)
           if [ -n "$labeled" ] && [ "$(date -d "$labeled" +%s)" -gt "$(date -d "$changed" +%s)" ]; then
@@ -94,7 +89,7 @@ jobs:
             labeled=$(gh api --paginate "repos/$REPO/issues/$pr/events?per_page=100" \
               --jq '.[] | select(.event == "labeled" and .label.name == env.LABEL) | .created_at' | sort | tail -n 1)
             # A person's review, new or edited: an edited summary keeps its submission
-            # time but moves updatedAt. Only an approval with nothing written asks for nothing.
+            # time but moves updatedAt. An approval or a dismissal with nothing written asks for nothing.
             # shellcheck disable=SC2016 # $owner and friends are GraphQL variables, not shell ones
             reviews=$(gh api graphql --paginate -f owner="${REPO%/*}" -f name="${REPO#*/}" -F number="$pr" -f query='
               query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
@@ -108,7 +103,7 @@ jobs:
                 }
               }' \
               --jq '.data.repository.pullRequest.reviews.nodes[]
-                | select(.author.__typename != "Bot" and .state != "PENDING" and (.state != "APPROVED" or (.body | test("\\S"))))
+                | select(.author.__typename != "Bot" and .state != "PENDING" and ((.state != "APPROVED" and .state != "DISMISSED") or (.body | test("\\S"))))
                 | .updatedAt')
             inline=$(gh api --paginate "repos/$REPO/pulls/$pr/comments?per_page=100" \
               --jq '.[] | select(.user.type != "Bot") | .updated_at')
