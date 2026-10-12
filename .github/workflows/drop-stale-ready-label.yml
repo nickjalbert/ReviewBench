@@ -1,10 +1,12 @@
 name: Drop stale ready-to-approve label
 
 # "ready to approve" says a maintainer triaged this onboarding pull request:
-# its head commit and its conversation. A push makes that untrue, and so does
-# a new or edited comment from a person: a vendor asking for another change, or
-# a maintainer raising a concern. Either way the label comes off, unless it was
-# added after that event (a triage that already saw it).
+# its head commit, its title, body and base, and its conversation. A push makes
+# that untrue, and so do an edit to the pull request (title, body or base), its
+# conversion to draft, its reopening, and a new or edited comment from a person:
+# a vendor asking for another change, or a maintainer raising a concern. Any of
+# these takes the label off, unless it was added after that event (a triage
+# that already saw it).
 #
 # Reviews and inline review comments are swept on a schedule instead of
 # watched as events: Copilot's own reviews would leave a run of this workflow
@@ -17,7 +19,7 @@ name: Drop stale ready-to-approve label
 
 on:
   pull_request_target:
-    types: [synchronize]
+    types: [synchronize, edited, converted_to_draft, reopened]
   issue_comment:
     types: [created, edited]
   schedule:
@@ -51,8 +53,9 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C
-          # A comment carries its own time (its last edit). A push doesn't, so use the
-          # run's: it is created when the push arrives, and the job may start later.
+          # A comment carries its own time (its last edit). A pull request event (a push,
+          # an edit, a draft, a reopen) doesn't, so use the run's: it is created when the
+          # event arrives, and the job may start later.
           if [ -n "$COMMENTED_AT" ]; then
             changed=$COMMENTED_AT
           else
