@@ -1,0 +1,114 @@
+name: Drop stale ready-to-approve label
+
+# "ready to approve" says a maintainer triaged this onboarding pull request:
+# its head commit and its conversation. A push makes that untrue, and so does
+# a new or edited comment from a person: a vendor asking for another change, or
+# a maintainer raising a concern. Either way the label comes off, unless it was
+# added after that event (a triage that already saw it).
+#
+# Reviews and inline review comments are swept on a schedule instead of
+# watched as events: Copilot's own reviews would leave a run of this workflow
+# waiting for approval on every pull request.
+#
+# `pull_request_target` and `issue_comment` give the token write access to
+# labels. That is safe only because these jobs check out nothing and run no
+# code from the pull request: they read the label's history, reviews and
+# comments, and remove the label. Keep it that way.
+
+on:
+  pull_request_target:
+    types: [synchronize]
+  issue_comment:
+    types: [created, edited]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  drop:
+    if: >-
+      github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+      && (contains(github.event.pull_request.labels.*.name, 'ready to approve')
+      || (github.event.issue.pull_request && contains(github.event.issue.labels.*.name, 'ready to approve')))
+      && github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Remove the label if it predates this change
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
+          LABEL: ready to approve
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          # The run is created when the event arrives; the job itself may start later.
+          changed=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .created_at)
+          labeled=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
+            --jq '.[] | select(.event == "labeled" and .label.name == env.LABEL) | .created_at' | sort | tail -n 1)
+          if [ -n "$labeled" ] && [ "$(date -d "$labeled" +%s)" -gt "$(date -d "$changed" +%s)" ]; then
+            echo "labelled at $labeled, after this $EVENT at $changed: keeping it"
+            exit 0
+          fi
+          echo "labelled at ${labeled:-an unknown time}, before this $EVENT at $changed: removing it"
+          if ! out=$(gh api -X DELETE "repos/$REPO/issues/$PR/labels/ready%20to%20approve" 2>&1); then
+            # Already gone is fine; anything else is not.
+            grep -q "HTTP 404" <<< "$out" || { echo "$out" >&2; exit 1; }
+          fi
+
+  sweep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Remove the label where a person reviewed after it was added
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LABEL: ready to approve
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          # Each lookup is its own checked assignment, so a failed one stops the sweep
+          # rather than reading as "nothing new".
+          prs=$(gh api --paginate "repos/$REPO/issues?state=open&labels=ready%20to%20approve&per_page=100" \
+            --jq '.[] | select(.pull_request) | .number')
+          for pr in $prs; do
+            labeled=$(gh api --paginate "repos/$REPO/issues/$pr/events?per_page=100" \
+              --jq '.[] | select(.event == "labeled" and .label.name == env.LABEL) | .created_at' | sort | tail -n 1)
+            # A person's review, new or edited: an edited summary keeps its submission
+            # time but moves updatedAt. Only an approval with nothing written asks for nothing.
+            # shellcheck disable=SC2016 # $owner and friends are GraphQL variables, not shell ones
+            reviews=$(gh api graphql --paginate -f owner="${REPO%/*}" -f name="${REPO#*/}" -F number="$pr" -f query='
+              query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $number) {
+                    reviews(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes { author { __typename } state body updatedAt }
+                    }
+                  }
+                }
+              }' \
+              --jq '.data.repository.pullRequest.reviews.nodes[]
+                | select(.author.__typename != "Bot" and .state != "PENDING" and (.state != "APPROVED" or (.body | test("\\S"))))
+                | .updatedAt')
+            inline=$(gh api --paginate "repos/$REPO/pulls/$pr/comments?per_page=100" \
+              --jq '.[] | select(.user.type != "Bot") | .updated_at')
+            latest=$(printf '%s\n%s\n' "$reviews" "$inline" | sed '/^$/d' | sort | tail -n 1)
+            if [ -z "$latest" ] || { [ -n "$labeled" ] && [ "$(date -d "$latest" +%s)" -lt "$(date -d "$labeled" +%s)" ]; }; then
+              continue
+            fi
+            echo "#$pr: labelled at ${labeled:-an unknown time}, reviewed at $latest: removing it"
+            if ! out=$(gh api -X DELETE "repos/$REPO/issues/$pr/labels/ready%20to%20approve" 2>&1); then
+              grep -q "HTTP 404" <<< "$out" || { echo "$out" >&2; exit 1; }
+            fi
+          done
