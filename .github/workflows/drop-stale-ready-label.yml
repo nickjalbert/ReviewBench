@@ -46,12 +46,18 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           RUN_ID: ${{ github.run_id }}
+          COMMENTED_AT: ${{ github.event.comment.updated_at }}
           LABEL: ready to approve
         run: |
           set -euo pipefail
           export LC_ALL=C
-          # The run is created when the event arrives; the job itself may start later.
-          changed=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .created_at)
+          # A comment carries its own time (its last edit). A push doesn't, so use the
+          # run's: it is created when the push arrives, and the job may start later.
+          if [ -n "$COMMENTED_AT" ]; then
+            changed=$COMMENTED_AT
+          else
+            changed=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .created_at)
+          fi
           labeled=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
             --jq '.[] | select(.event == "labeled" and .label.name == env.LABEL) | .created_at' | sort | tail -n 1)
           if [ -n "$labeled" ] && [ "$(date -d "$labeled" +%s)" -gt "$(date -d "$changed" +%s)" ]; then
