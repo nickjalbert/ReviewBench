@@ -44,6 +44,7 @@ jobs:
         run: |
           python -m pip install 'pydantic>=2,<3' toml pathspec
           python -m pip install --no-deps 'git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b'
+      - run: python tests/harbor-format.test.py
       - name: Export and validate both datasets without network or inference
         shell: bash
         run: |

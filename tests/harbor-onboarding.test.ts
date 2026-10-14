@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { createOnboardingKit } from "../scripts/harbor/onboard.js";
+import { exportDataset, packageDigest } from "../scripts/harbor/export.js";
+import { prepareByoJudge } from "../scripts/harbor/byo-judge.js";
 import { validateFindings } from "../scripts/harbor/validate-findings.js";
 
 function fixture(t: TestContext) {
@@ -61,6 +63,106 @@ test("custom harness kit uses an importable adapter and fails explicitly until i
   assert.match(adapter, /\/work\/out\/findings\.json/);
 });
 
+  function byoFixture(t: TestContext) {
+    const f = fixture(t);
+    const approved = join(f.root, "approved");
+    exportDataset({
+      output: approved, organization: "review-bench", split: "test", limit: 1,
+      provider: "github-copilot", model: "claude-sonnet-5",
+      baseImage: `node:22-bookworm-slim@sha256:${"a".repeat(64)}`,
+      agentHosts: ["reviewer.example.com"], judgeHosts: ["api.githubcopilot.com"],
+      judgeEnv: { CAPI_DEV_KEY: "RB_HARBOR_CAPI_KEY" }, verifierTimeout: 7200,
+    });
+    const judge = {
+      provider: "anthropic", model: "claude-sonnet-4-6",
+      hosts: ["api.anthropic.com"], env: { ANTHROPIC_API_KEY: "RB_HARBOR_JUDGE_KEY" },
+    };
+    return { ...f, approved, judge };
+  }
+
+  test("BYO onboarding creates a private versioned judge profile without changing the source or reviewer", (t) => {
+    const f = byoFixture(t);
+    const key = readdirSync(f.approved).find(name => existsSync(join(f.approved, name, "task.toml")))!;
+    const originalToml = readFileSync(join(f.approved, key, "task.toml"), "utf8");
+    const originalTask = JSON.parse(readFileSync(join(f.approved, key, "tests", "task.json"), "utf8"));
+    createOnboardingKit({
+      dataset: f.approved, output: f.output, agent: "codex",
+      model: "example/reviewer", environment: "docker", judge: f.judge,
+    });
+    const dataset = join(f.output, "dataset");
+    const job = JSON.parse(readFileSync(join(f.output, "job.json"), "utf8"));
+    assert.deepEqual(job.datasets, [{ path: dataset }]);
+    assert.deepEqual(job.agents, [{ name: "codex", model_name: "example/reviewer" }]);
+    assert.equal(job.metrics[0].kwargs.script_path, join(dataset, "metric.py"));
+    const task = JSON.parse(readFileSync(join(dataset, key, "tests", "task.json"), "utf8"));
+    assert.equal(task.task_id, originalTask.task_id);
+    assert.notEqual(task.evaluation_id, originalTask.evaluation_id);
+    assert.equal(task.provider, "anthropic");
+    assert.equal(task.model, "claude-sonnet-4-6");
+    const toml = readFileSync(join(dataset, key, "task.toml"), "utf8");
+    assert.match(toml, /ANTHROPIC_API_KEY = "\$\{RB_HARBOR_JUDGE_KEY\}"/);
+    assert.equal(toml.includes("CAPI_DEV_KEY"), false);
+    assert.match(toml, /\[agent\][\s\S]*allowed_hosts = \["reviewer.example.com"\]/);
+    assert.equal(toml.match(/allowed_hosts = \["api.anthropic.com"\]/g)?.length, 2);
+    assert.match(toml, /environment_mode = "separate"/);
+    assert.equal(readFileSync(join(f.approved, key, "task.toml"), "utf8"), originalToml);
+    const metric = readFileSync(join(dataset, "metric.py"), "utf8");
+    assert.match(metric, new RegExp(`"${task.task_id}":${task.evaluation_id}`));
+    const files = prepareByoJudge(f.approved, f.judge);
+    const taskFiles = new Map([...files].filter(([path]) => path.startsWith(`${key}/`))
+      .map(([path, contents]) => [path.slice(key.length + 1), contents]));
+    assert.ok(files.get("dataset.toml")!.includes(`digest = "sha256:${packageDigest(taskFiles)}"`));
+    assert.match(files.get("dataset.toml")!, /reviewbench-test-smoke-1-byo/);
+    assert.equal(JSON.parse(files.get("byo-judge.json")!).official_submission, false);
+    assert.deepEqual(prepareByoJudge(f.approved, f.judge), files);
+    const different = prepareByoJudge(f.approved, { ...f.judge, model: "claude-sonnet-4-5" });
+    assert.notEqual(JSON.parse(different.get(`${key}/tests/task.json`)!).evaluation_id, task.evaluation_id);
+  });
+
+  test("BYO judge rejects unregistered models, credential values, incomplete mappings and unsafe hosts before writing", (t) => {
+    const f = byoFixture(t);
+    for (const judge of [
+      { ...f.judge, model: "claude-sonnet-5-not-registered" },
+      { ...f.judge, provider: "github-copilot" },
+      { ...f.judge, env: {} },
+      { ...f.judge, env: { ANTHROPIC_API_KEY: "sk-actual-key-value" } },
+      { ...f.judge, hosts: ["https://api.anthropic.com"] },
+      { ...f.judge, hosts: ["*.anthropic.com"] },
+    ]) {
+      assert.throws(() => createOnboardingKit({
+        dataset: f.approved, output: f.output, agent: "codex",
+        model: "example/reviewer", environment: "docker", judge,
+      }));
+      assert.equal(existsSync(f.output), false);
+    }
+  });
+
+  test("BYO judge refuses private verifier overrides and mismatched task identities", (t) => {
+    const f = byoFixture(t);
+    const key = readdirSync(f.approved).find(name => existsSync(join(f.approved, name, "task.toml")))!;
+    const script = join(f.approved, key, "tests", "test.sh");
+    const original = readFileSync(script, "utf8");
+    writeFileSync(script, "exec node private-capi-wrapper.ts\n");
+    assert.throws(() => prepareByoJudge(f.approved, f.judge), /canonical verifier/);
+    writeFileSync(script, original);
+    const path = join(f.approved, key, "tests", "task.json");
+    const task = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify({ ...task, evaluation_id: task.evaluation_id + 1 }));
+    assert.throws(() => prepareByoJudge(f.approved, f.judge), /identity\/version mismatch/);
+  });
+
+  test("BYO judge rejects a modified metric or task instead of trusting stale content digests", (t) => {
+    const f = byoFixture(t);
+    const metric = join(f.approved, "metric.py");
+    const original = readFileSync(metric, "utf8");
+    writeFileSync(metric, original + "\n# modified\n");
+    assert.throws(() => prepareByoJudge(f.approved, f.judge), /metric content digest/);
+    writeFileSync(metric, original);
+    const key = readdirSync(f.approved).find(name => existsSync(join(f.approved, name, "task.toml")))!;
+    const instruction = join(f.approved, key, "instruction.md");
+    writeFileSync(instruction, readFileSync(instruction, "utf8") + "\nModified instruction\n");
+    assert.throws(() => prepareByoJudge(f.approved, f.judge), /task content digest/);
+  });
 test("onboarding rejects incomplete or ambiguous configuration without creating output", (t) => {
   const f = fixture(t);
   const base = { dataset: f.dataset, output: f.output, environment: "docker" as const };
@@ -91,6 +193,49 @@ test("onboarding rejects a missing approved export and unsupported sandbox", (t)
   assert.equal(result.status, 1);
   assert.match(result.stderr, /environment must be/);
   assert.equal(existsSync(f.output), false);
+});
+
+test("BYO CLI rejects partial flags and duplicate environment mappings without creating a kit", (t) => {
+  const f = byoFixture(t);
+  const base = [
+    "--import", "tsx", "scripts/harbor/onboard.ts",
+    "--dataset", f.approved, "--output", f.output,
+    "--agent", "codex", "--model", "example/reviewer",
+  ];
+  for (const options of [
+    ["--judge-provider", "anthropic"],
+    ["--judge-model", "claude-sonnet-4-6"],
+    ["--judge-host", "api.anthropic.com"],
+    ["--judge-env", "ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY"],
+    ["--judge-provider", "anthropic", "--judge-model", "claude-sonnet-4-6",
+      "--judge-env", "ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY",
+      "--judge-env", "ANTHROPIC_API_KEY=RB_HARBOR_OTHER_KEY"],
+  ]) {
+    const result = spawnSync(process.execPath, [...base, ...options], { encoding: "utf8" });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /Harbor onboarding failed:/);
+    assert.equal(existsSync(f.output), false);
+  }
+});
+
+test("BYO judge refuses uncatalogued files rather than copying them into the kit", (t) => {
+  const f = byoFixture(t);
+  writeFileSync(join(f.approved, "unlisted.txt"), "An unrelated file\n");
+  assert.throws(() => createOnboardingKit({
+    dataset: f.approved, output: f.output, agent: "codex",
+    model: "example/reviewer", environment: "docker", judge: f.judge,
+  }), /Unexpected dataset asset/);
+  assert.equal(existsSync(f.output), false);
+});
+
+test("BYO onboarding cannot write its output inside the source dataset", (t) => {
+  const f = byoFixture(t);
+  const output = join(f.approved, "nested-kit");
+  assert.throws(() => createOnboardingKit({
+    dataset: f.approved, output, agent: "codex",
+    model: "example/reviewer", environment: "docker", judge: f.judge,
+  }), /outside the source dataset/);
+  assert.equal(existsSync(output), false);
 });
 
 test("standalone validator accepts valid and empty findings, rejects identity and format errors", (t) => {

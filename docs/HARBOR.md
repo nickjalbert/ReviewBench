@@ -44,7 +44,8 @@ harbor run -c .\.harbor\my-kit\job.json
 ```
 
 The kit includes a ready job configuration, the dataset's custom metric, a
-custom-harness adapter template, and findings-format instructions. It references
+custom-harness adapter template, and findings-format instructions. Without
+[BYO judge options](#self-funded-byo-judge), it references
 the original dataset; it does not copy task assets, change the judge, or include
 credentials. Generate it on the machine orchestrating Harbor so paths resolve.
 Use `daytona`, `modal`, or `e2b` instead of `docker` for a supported, approved
@@ -65,6 +66,51 @@ npm run harbor:validate-findings -- --candidate .\findings.json --pr .\.harbor\s
 This uses the same format and PR-identity validator as the separate verifier.
 It does not judge finding correctness. Start with a limited export for a
 smoke test before running the full approved dataset.
+
+## Self-funded BYO judge
+
+Use a canonical local export or a downloaded Hub dataset to generate a private
+kit with your own judge provider and API key:
+
+```powershell
+harbor datasets download "review-bench/reviewbench@private-full219-v1" --output-dir .\.harbor\hub
+python scripts\harbor\check-format.py .\.harbor\hub\reviewbench --hub-ref "review-bench/reviewbench@private-full219-v1"
+npm run harbor:onboard -- --dataset .\.harbor\hub\reviewbench --output .\.harbor\byo-kit --agent "<agent-name>" --model "<reviewer-provider>/<reviewer-model>" --environment docker --judge-provider anthropic --judge-model claude-sonnet-4-6 --judge-host api.anthropic.com --judge-env ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY
+harbor run -c .\.harbor\byo-kit\job.json
+python scripts\harbor\check-job.py .\.harbor\byo-kit\jobs\reviewbench .\.harbor\byo-kit\dataset\metric.py --output .\.harbor\byo-kit\verified-metrics.json
+```
+
+Harbor 0.24 omits `dataset.toml` from Hub downloads. The `--hub-ref` check above
+restores that manifest from the same pinned Hub version only after validating
+all downloaded task and metric digests and exact task coverage. It requires
+Harbor installed in that Python environment and Hub access. Local exports
+already have a manifest; omit this restoration step for them.
+
+Before execution, provision the host variable `RB_HARBOR_JUDGE_KEY` through your
+secret manager. Do not pass its value in command arguments or the job file.
+The task maps it to the provider API-key variable **only inside the separate
+verifier**; give the reviewer its own credential. The user pays for their runner
+and both models. Hub sign-in grants dataset access, not model access.
+
+Supported API-key providers are `anthropic`, `openai`, `azure-openai-responses`,
+`google`, `deepseek`, and `openrouter`. Choose a model registered by the locked
+SDK; the example uses a registered model, not the private official judge.
+Additional provider-specific variables and exact endpoint hosts can be mapped
+with repeated `--judge-env` and `--judge-host` options. No custom model registry,
+private CAPI transport, or credential value is copied into the kit.
+
+Explicit BYO options create `<kit>\dataset`, verify the source content digests,
+and change only the judge configuration in that private copy. The PR snapshots,
+goldens, reviewer instructions, and reviewer allowlist remain unchanged.
+Changed judge settings receive new evaluation IDs, task digests, and a matching
+metric; use **the kit's metric** when validating or comparing those runs.
+`dataset/byo-judge.json` records the nonsecret judge policy. Existing prebuilt
+images and noncanonical/private verifier entrypoints are rejected rather than
+silently reusing the wrong judge.
+
+Without BYO options, onboarding keeps its original reference-only behavior.
+These scores are for self-funded tuning; official submissions still require
+fresh maintainer-controlled execution with the official judge.
 
 ## Export
 
@@ -312,7 +358,8 @@ harbor run -c .\.harbor\full-kit\job.json
 Run Docker jobs on an approved **Linux** orchestrator with the required
 allowlist kernel support, not a Windows orchestrator. Alternatively, generate
 the kit for an approved cloud sandbox that supports the same isolation.
-The package does not grant inference access: the approved Sonnet 5 judge
+The package does not grant inference access. Use the BYO kit above for
+self-funded tuning. To use the approved Sonnet 5 judge instead, its
 connection, verifier-only credential delivery, and its SDK model registration
 must be provisioned by the maintainer before execution. Private CAPI transport
 implementation and credentials are not included in the Hub task packages.

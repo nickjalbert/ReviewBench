@@ -1,7 +1,10 @@
 # ReviewBench user kit
 
-This kit connects your reviewer to an approved ReviewBench task export. It does
-not copy the dataset, change the judge, install credentials, or publish results.
+This kit connects your reviewer to an approved ReviewBench task export or Hub
+download. By default it references that dataset without changing it. With
+explicit BYO judge options, it creates a private dataset copy inside the kit
+with new judge settings and evaluation IDs. Neither mode installs credentials
+or publishes results.
 The dataset paths in `job.json` refer to the machine running Harbor; regenerate
 the kit if you move the dataset or use a different execution machine.
 The kit's `kit.json` records `task_count`: a full benchmark kit must contain
@@ -18,8 +21,55 @@ the approved verifier-only judge connection from the dataset maintainer; the
 task export must already specify that connection and any required model
 registration. This kit does not grant judge access.
 
+For self-funded tuning, use the BYO judge options described below instead of
+requesting access to the maintainer's judge connection.
+
 Never put secret values in `job.json`, findings, source files, or command
 arguments. Keep judge credentials confined to the verifier.
+
+## Bring your own judge
+
+From the ReviewBench source checkout, generate a kit with a registered API-key
+judge provider/model, its exact endpoint hostname, and a verifier-only variable
+mapping:
+
+For a Harbor 0.24 Hub download, first restore its missing manifest from the
+same pinned reference using `python scripts\harbor\check-format.py
+<approved-dataset-directory> --hub-ref "<org>/<dataset>@<version-or-tag>"`.
+This requires Harbor in that Python environment and Hub access, and verifies
+all downloaded digests and exact task coverage before writing `dataset.toml`.
+Skip this step for a local export that already contains the manifest.
+
+```powershell
+npm run harbor:onboard -- --dataset <approved-dataset-directory> --output .\.harbor\byo-kit --agent "<agent-name>" --model "<reviewer-provider>/<reviewer-model>" --environment docker --judge-provider anthropic --judge-model claude-sonnet-4-6 --judge-host api.anthropic.com --judge-env ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY
+```
+
+Use `--custom-agent` instead of the reviewer agent/model options for your own
+harness. Supported BYO providers are `anthropic`, `openai`,
+`azure-openai-responses`, `google`, `deepseek`, and `openrouter`. The model must
+be recognized by the locked judge SDK; preparation rejects unknown models rather
+than substituting another one. Repeat `--judge-host` or `--judge-env` for required
+additional endpoints or provider-specific variables.
+
+Provision `RB_HARBOR_JUDGE_KEY` on the **Harbor orchestrator** through your secret
+manager before running the job. Its value is mapped to `ANTHROPIC_API_KEY` only
+in the separate verifier. Supply a different reviewer credential independently.
+Never put the judge key in agent `env`, job configuration, images, or command
+arguments. Selecting hosted secrets for the reviewer is not verifier-only
+delivery; use the approved CLI runner/provider secret mechanism.
+
+The kit checks source task/metric digests, replaces the old judge credential
+mapping, and records its BYO policy in `dataset/byo-judge.json`. It preserves the
+PRs, goldens, reviewer instruction, and reviewer network policy. It changes the
+judge's model, endpoint allowlist, evaluation IDs, task digests, and metric in
+the **private copy**, never the source dataset or published package. Tasks with
+private verifier overrides or prebuilt images are rejected; this path rebuilds
+the canonical separate verifier.
+
+Run `harbor run -c <byo-kit>\job.json`, then check the job using
+`<byo-kit>\dataset\metric.py`, not the source dataset's metric. The user pays for
+reviewer inference, judge inference, and their execution infrastructure. A BYO
+score is for tuning only; it is not an official leaderboard submission.
 
 ## Use your agent
 
