@@ -7,7 +7,6 @@ from pathlib import Path
 
 from harbor.models.dataset.manifest import DatasetManifest, DatasetInfo, DatasetTaskRef, DatasetFileRef
 from harbor.models.task.config import TaskConfig
-from harbor.models.task.id import PackageTaskId
 from harbor.publisher.packager import Packager
 
 
@@ -35,6 +34,7 @@ def validate(dataset, directory):
 async def hub_manifest(reference):
     if "@" not in reference or reference.rsplit("@", 1)[1] in ("", "latest", "head"):
         raise ValueError("--hub-ref requires a pinned org/dataset@version, tag, or digest")
+    from harbor.models.task.id import PackageTaskId
     from harbor.registry.client.package import PackageDatasetClient
 
     metadata = await PackageDatasetClient().get_dataset_metadata(reference)

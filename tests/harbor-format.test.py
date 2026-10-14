@@ -14,7 +14,8 @@ spec = importlib.util.spec_from_file_location(
     "check_format", Path(__file__).resolve().parents[1] / "scripts" / "harbor" / "check-format.py"
 )
 checker = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(checker)
+with patch.dict(sys.modules, {"shortuuid": None}):
+    spec.loader.exec_module(checker)
 
 
 class HubManifestTests(unittest.TestCase):
