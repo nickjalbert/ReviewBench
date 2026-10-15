@@ -5,6 +5,12 @@ ReviewBench findings contract and uses the existing TypeScript matcher,
 classifier, and scorer in a **separate verifier sandbox**. It does not publish
 anything, start jobs, or replace the official ReviewBench submission portal.
 
+This integration provides shared dataset packaging, harness onboarding, native
+run controls, scoring, and result validation. Vendor-specific review runners,
+private deployment configurations, credentials, and internal user-acceptance
+launchers are not part of the adapter. The onboarding kit provides a generic
+custom-agent template, not a preinstalled vendor harness.
+
 The format targets Harbor **v0.24.0**, commit
 `b53b8134e1241686dca7759af188f987ecc48e8b`: task schema 1.3 and dataset schema 1.0.
 Vendor reviewer containers are not automatically Harbor agents. Start with a
@@ -180,13 +186,13 @@ Supported API-key providers are `anthropic`, `openai`, `azure-openai-responses`,
 SDK; the example uses a registered model, not the private official judge.
 Additional provider-specific variables and exact endpoint hosts can be mapped
 with repeated `--judge-env` and `--judge-host` options. No personal model
-registry, private CAPI transport, or credential value is copied into the kit.
+registry, executable custom transport, or credential value is copied into the kit.
 
 For an Azure deployment, repeated `--judge-setting KEY=VALUE` options can pin
 the nonsecret `AZURE_OPENAI_BASE_URL`, `AZURE_OPENAI_API_VERSION`, and
 `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` settings. The deployment map must explicitly
 map the requested model ID to one deployment, such as
-`gpt-5.6-sol=my-deployment`. These values become part of the profile fingerprint;
+`my-judge-model=my-deployment`. These values become part of the profile fingerprint;
 do not use `--judge-setting` for API keys.
 
 The locked Azure transport normalizes Azure resource URLs to `/openai/v1`.
@@ -205,7 +211,7 @@ and model. For example:
     "azure-openai-responses": {
       "baseUrl": "https://your-resource.openai.azure.com/openai",
       "models": [{
-        "id": "gpt-5.6-sol",
+        "id": "my-judge-model",
         "reasoning": true,
         "input": ["text"],
         "contextWindow": 128000,
@@ -433,11 +439,10 @@ requires blocked egress to a non-allowlisted hostname. The real judge then
 grades the transferred artifact in a fresh verifier. This validates plumbing,
 not real reviewer or authenticated judge performance.
 
-Use one attempt per task per job. For three-round reporting, run three complete
-jobs with identical versions, then report the mean/std of the three round
-aggregates. Multiple attempts, task filters, and partial regrades intentionally
-do not yield a complete score for the original dataset. A smoke subset must be
-exported as its own dataset.
+Without the run plugin, use one attempt per task over the entire source export.
+For subsets and repeated rounds, use the harness-independent plugin and native
+controls described above. Do not mix independent jobs, pool attempts, or infer
+the intended coverage from whichever trials happened to succeed.
 
 ## Private result upload
 
@@ -465,68 +470,55 @@ Result upload and dataset publication are separate actions. This adapter does
 not automatically publish results, create leaderboard rows, or replace
 ReviewBench's official submission process.
 
-## Full private benchmark
+## Full benchmark execution
 
-The full **219-PR** corpus is published privately as
-[`review-bench/reviewbench`](https://hub.harborframework.com/datasets/review-bench/reviewbench),
-revision **1**, tagged **`private-full219-v1`**. All 219 referenced task packages
-are private, and their downloaded content digests and packaged metric have
-been verified against the export. This is the full corpus, not the 25-PR test
-set or a smoke subset. Sign in with an account authorized for the `review-bench`
-Harbor organization.
+Obtain an approved **219-PR** export or a pinned Hub reference from the dataset
+maintainer. Dataset access, inference access, and permission to publish are
+separate. The chosen review harness must be compatible with the dataset's
+reviewer image and endpoint policies; onboarding does not install a vendor
+harness or relax those policies.
 
-Download a pinned version and generate a full-run kit:
+For a Hub dataset, sign in with an authorized account, download the approved
+version, and verify its content before generating a kit. Replace both values
+below with the approved reference and the actual downloaded dataset directory:
 
 ```powershell
+$datasetRef = "<org>/<dataset>@<approved-version>"
+$datasetDir = "<downloaded-dataset-directory>"
 harbor auth login
-harbor datasets download "review-bench/reviewbench@private-full219-v1" --output-dir .\.harbor\hub
-npm run harbor:onboard -- --dataset .\.harbor\hub\reviewbench --output .\.harbor\full-kit --agent codex --model "<provider>/<reviewer-model>" --environment docker
-harbor run -c .\.harbor\full-kit\job.json
+harbor datasets download $datasetRef --output-dir .\.harbor\hub
+python scripts\harbor\check-format.py $datasetDir --hub-ref $datasetRef
+npm run harbor:onboard -- --dataset $datasetDir --output .\.harbor\full-kit --agent "<agent-name>" --model "<provider>/<reviewer-model>" --environment docker
+$env:PYTHONPATH = (Get-Location).Path
+harbor run -c .\.harbor\full-kit\job.json -p $datasetDir --plugin scripts.harbor.reviewbench_plugin:ReviewBenchPlugin -n 5 -k 3
 ```
 
-Run Docker jobs on an approved **Linux** orchestrator with the required
-allowlist kernel support, not a Windows orchestrator. Alternatively, generate
-the kit for an approved cloud sandbox that supports the same isolation.
-The package does not grant inference access. Use the BYO kit above for
-self-funded tuning. To use the approved Sonnet 5 judge instead, its
-connection, verifier-only credential delivery, and its SDK model registration
-must be provisioned by the maintainer before execution. Private CAPI transport
-implementation and credentials are not included in the Hub task packages.
+For a local export with an existing manifest, omit the download and `--hub-ref`
+restoration and validate it with `check-format.py <directory>`. Use the BYO
+options above if the original judge connection is unavailable; that creates a
+separately fingerprinted private profile rather than reusing its evaluation IDs.
 
-Use one attempt per PR, no task filters, and enough runner time, disk space,
-and model capacity for all 219 reviews and verifications. Increase
-`n_concurrent_trials` only within your runner resources and provider quotas.
-The private validation runner uses three concurrent trials, a dedicated
-garbage-collected Docker builder, and retains sanitized interrupted-run
-artifacts. A timeout, model rate limit, missing review, or failed trial must
-remain a failure; do not convert it into an empty review or a zero score.
-A reviewer-written, valid empty findings array is permitted and scored normally.
+Run on an approved Linux orchestrator or compatible cloud sandbox. Allocate
+enough time, disk, model quota, and runner resources for the requested
+`219*k` trials. A timeout, rate limit, missing review, or failed trial remains
+a failure; it must not become a fabricated empty review or zero score.
 
-The private authenticated validation profile uses the unchanged public
-evaluator with a separately provisioned Sonnet 5 transport. That integration is
-fingerprinted into **distinct evaluation IDs** for all 219 tasks; it does not
-silently reuse the canonical package's evaluation IDs. Use the metric exported
-with the executed profile when checking its results. Record the dataset
-revision/tag, public evaluator commit, private transport fingerprint when
-applicable, reviewer version/model, and every task/evaluation identity.
-Do not mix profile versions or describe a partial run as a full-benchmark score.
-
-After every PR has completed, check and upload the actual job:
+After all selected tasks and rounds complete, validate the retained run metric,
+then upload and validate the downloaded job again:
 
 ```powershell
-python scripts\harbor\check-job.py .\.harbor\full-kit\jobs\reviewbench .\.harbor\hub\reviewbench\metric.py --output .\.harbor\full-kit\verified-metrics.json
-harbor upload .\.harbor\full-kit\jobs\reviewbench --private --org review-bench
+python scripts\harbor\check-job.py .\.harbor\full-kit\jobs\reviewbench .\.harbor\full-kit\jobs\reviewbench\reviewbench-metric.py --output .\.harbor\full-kit\verified-metrics.json
+harbor upload .\.harbor\full-kit\jobs\reviewbench --private --org "<approved-hub-org>"
 harbor jobs download "<uploaded-job-id>" --output-dir .\.harbor\readback
-python scripts\harbor\check-job.py .\.harbor\readback\reviewbench .\.harbor\hub\reviewbench\metric.py --output .\.harbor\readback\verified-metrics.json
+python scripts\harbor\check-job.py .\.harbor\readback\reviewbench .\.harbor\readback\reviewbench\reviewbench-metric.py --output .\.harbor\readback\verified-metrics.json
 ```
 
-Only `complete=1`, `expected_prs=219`, `scored_prs=219`, and zero Harbor trial
-exceptions establish a successful full run. Verify downloaded findings,
-scores, rewards, and metric results against the originals. A successful
-one-PR authenticated smoke run proves integration, not full-run completion.
-Private package publication is also not public release or official leaderboard
-acceptance. Public redistribution and publication of prebuilt images still
-require the maintainer's licensing/privacy approvals.
+For the three-round example, require `complete=1`,
+`source_prs=expected_prs=219`, `n_attempts=completed_rounds=3`,
+`expected_trials=scored_trials=657`, and zero trial exceptions or duplicates.
+Record the dataset reference, evaluator version, reviewer version/model, and
+the frozen plan. A one-PR smoke proves integration, not full-run completion.
+Result upload is not public dataset release or official leaderboard acceptance.
 
 ## Optional hosted execution and dataset publication
 
@@ -539,7 +531,7 @@ Harbor agent's provider/model configuration; the verifier uses the exported
 
 The judge's locked SDK must recognize that exact provider/model pair.
 An empty-review smoke test makes no model calls and therefore cannot prove
-model availability or authentication. Do not guess a Sonnet 5 identifier or
+model availability or authentication. Do not guess an unregistered identifier or
 treat a successful empty-review test as proof that an unregistered model works.
 
 Harbor uses GitHub OAuth for sign-in but has separate organization memberships.

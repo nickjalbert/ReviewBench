@@ -71,10 +71,10 @@ test("custom harness kit uses an importable adapter and fails explicitly until i
     const approved = join(f.root, "approved");
     exportDataset({
       output: approved, organization: "review-bench", split: "test", limit: 1,
-      provider: "github-copilot", model: "claude-sonnet-5",
+      provider: "openai", model: "source-judge-model",
       baseImage: `node:22-bookworm-slim@sha256:${"a".repeat(64)}`,
-      agentHosts: ["reviewer.example.com"], judgeHosts: ["api.githubcopilot.com"],
-      judgeEnv: { CAPI_DEV_KEY: "RB_HARBOR_CAPI_KEY" }, verifierTimeout: 7200,
+      agentHosts: ["reviewer.example.com"], judgeHosts: ["source-judge.example.com"],
+      judgeEnv: { OPENAI_API_KEY: "RB_HARBOR_SOURCE_JUDGE_KEY" }, verifierTimeout: 7200,
     });
     const judge = {
       provider: "anthropic", model: "claude-sonnet-4-6",
@@ -104,7 +104,7 @@ test("custom harness kit uses an importable adapter and fails explicitly until i
     assert.equal(task.model, "claude-sonnet-4-6");
     const toml = readFileSync(join(dataset, key, "task.toml"), "utf8");
     assert.match(toml, /ANTHROPIC_API_KEY = "\$\{RB_HARBOR_JUDGE_KEY\}"/);
-    assert.equal(toml.includes("CAPI_DEV_KEY"), false);
+    assert.equal(toml.includes("OPENAI_API_KEY"), false);
     assert.match(toml, /\[agent\][\s\S]*allowed_hosts = \["reviewer.example.com"\]/);
     assert.equal(toml.match(/allowed_hosts = \["api.anthropic.com"\]/g)?.length, 2);
     assert.match(toml, /environment_mode = "separate"/);
@@ -125,7 +125,7 @@ test("custom harness kit uses an importable adapter and fails explicitly until i
   test("BYO judge rejects unregistered models, credential values, incomplete mappings and unsafe hosts before writing", (t) => {
     const f = byoFixture(t);
     for (const judge of [
-      { ...f.judge, model: "claude-sonnet-5-not-registered" },
+      { ...f.judge, model: "unknown-judge-model" },
       { ...f.judge, provider: "github-copilot" },
       { ...f.judge, env: {} },
       { ...f.judge, env: { ANTHROPIC_API_KEY: "sk-actual-key-value" } },
@@ -145,7 +145,7 @@ test("custom harness kit uses an importable adapter and fails explicitly until i
     const key = readdirSync(f.approved).find(name => existsSync(join(f.approved, name, "task.toml")))!;
     const script = join(f.approved, key, "tests", "test.sh");
     const original = readFileSync(script, "utf8");
-    writeFileSync(script, "exec node private-capi-wrapper.ts\n");
+    writeFileSync(script, "exec node custom-verifier-wrapper.ts\n");
     assert.throws(() => prepareByoJudge(f.approved, f.judge), /canonical verifier/);
     writeFileSync(script, original);
     const path = join(f.approved, key, "tests", "task.json");
@@ -248,19 +248,19 @@ test("BYO Azure model registration preserves judge code and fingerprints deploym
     providers: {
       "azure-openai-responses": {
         baseUrl: "https://judge.example.com/openai",
-        models: [{ id: "gpt-5.6-sol", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 8192 }],
+        models: [{ id: "custom-judge-model", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 8192 }],
       },
     },
   };
   writeFileSync(modelConfig, JSON.stringify(definition));
   const judge = {
-    provider: "azure-openai-responses", model: "gpt-5.6-sol",
+    provider: "azure-openai-responses", model: "custom-judge-model",
     hosts: ["judge.example.com"], env: { AZURE_OPENAI_API_KEY: "RB_HARBOR_JUDGE_KEY" },
     modelConfig,
     settings: {
       AZURE_OPENAI_BASE_URL: "https://judge.example.com/openai",
       AZURE_OPENAI_API_VERSION: "2025-04-01-preview",
-      AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.6-sol=my-gpt56-deployment",
+      AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "custom-judge-model=example-deployment",
     },
   };
   assert.throws(() => {
@@ -271,8 +271,8 @@ test("BYO Azure model registration preserves judge code and fingerprints deploym
   }, /explicit allowlisted baseUrl/);
   writeFileSync(modelConfig, JSON.stringify(definition));
   createOnboardingKit({
-    dataset: f.approved, output: f.output, agent: "copilot-cli",
-    model: "copilot/reviewer", environment: "docker", judge,
+    dataset: f.approved, output: f.output, customAgent: true,
+    environment: "docker", judge,
   });
   const files = prepareByoJudge(f.approved, judge);
   const key = [...files.keys()].find(path => /^[^/]+\/task.toml$/.test(path))!.split("/")[0];
@@ -280,14 +280,14 @@ test("BYO Azure model registration preserves judge code and fingerprints deploym
     definition);
   const toml = files.get(`${key}/task.toml`)!;
   assert.match(toml, /PI_CODING_AGENT_DIR = "\/tests\/judge\/\.reviewbench-byo"/);
-  assert.match(toml, /AZURE_OPENAI_DEPLOYMENT_NAME_MAP = "gpt-5.6-sol=my-gpt56-deployment"/);
+  assert.match(toml, /AZURE_OPENAI_DEPLOYMENT_NAME_MAP = "custom-judge-model=example-deployment"/);
   assert.equal(toml.split("[verifier]")[0].includes("RB_HARBOR_JUDGE_KEY"), false);
   for (const path of ["tests/test.sh", "tests/judge/scripts/eval/eval.ts", "tests/judge/scripts/eval/matcher.ts"]) {
     assert.equal(files.get(`${key}/${path}`), readFileSync(join(f.approved, key, path), "utf8"));
   }
   const oldTask = JSON.parse(files.get(`${key}/tests/task.json`)!);
   const changed = prepareByoJudge(f.approved, {
-    ...judge, settings: { ...judge.settings, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.6-sol=other-deployment" },
+    ...judge, settings: { ...judge.settings, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "custom-judge-model=other-deployment" },
   });
   assert.notEqual(JSON.parse(changed.get(`${key}/tests/task.json`)!).evaluation_id, oldTask.evaluation_id);
   definition.providers["azure-openai-responses"].models[0].maxTokens = 4096;
@@ -320,8 +320,8 @@ test("BYO custom model definitions reject credentials, commands, transport overr
       providers: { [judge.provider]: { baseUrl: "https://judge.example.com/openai", ...provider } },
     }));
     assert.throws(() => createOnboardingKit({
-      dataset: f.approved, output: f.output, agent: "copilot-cli",
-      model: "copilot/reviewer", environment: "docker", judge,
+      dataset: f.approved, output: f.output, customAgent: true,
+      environment: "docker", judge,
     }));
     assert.equal(existsSync(f.output), false);
   }
