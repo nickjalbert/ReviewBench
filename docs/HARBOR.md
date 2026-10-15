@@ -106,6 +106,12 @@ map the requested model ID to one deployment, such as
 `gpt-5.6-sol=my-deployment`. These values become part of the profile fingerprint;
 do not use `--judge-setting` for API keys.
 
+The locked Azure transport normalizes Azure resource URLs to `/openai/v1`.
+Use a compatible API version (normally `--judge-setting AZURE_OPENAI_API_VERSION=v1`);
+a legacy preview version may fail on that route. Verify the actual SDK request
+before starting a benchmark, rather than relying on a successful raw HTTP call
+to a different route.
+
 If the locked SDK does not list your model, `--judge-model-config <models.json>`
 accepts an explicit, declarative SDK model definition for the selected provider
 and model. For example:
