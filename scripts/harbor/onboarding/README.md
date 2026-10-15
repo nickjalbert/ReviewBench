@@ -8,7 +8,9 @@ or publishes results.
 The dataset paths in `job.json` refer to the machine running Harbor; regenerate
 the kit if you move the dataset or use a different execution machine.
 The kit's `kit.json` records `task_count`: a full benchmark kit must contain
-all 219 PR tasks, not the 25-PR test split or a smoke subset.
+all 219 PR tasks, not the 25-PR test split or a smoke subset. The included
+`reviewbench_plugin.py`, `reviewbench-metric.py`, and `check-job.py` provide
+harness-independent subset/repeated-run planning and validation.
 
 ## Prepare
 
@@ -141,25 +143,49 @@ The separate verifier repeats validation before scoring.
 
 ## Run, check, and upload
 
-From the kit directory:
+From the kit directory, make both the run plugin and any custom adapter
+importable. On Linux, use your shell's equivalent of the `PYTHONPATH` assignment:
 
 ```powershell
-harbor run -c .\job.json
+$env:PYTHONPATH = (Get-Location).Path
+harbor run -c .\job.json -p "<dataset-path-from-kit.json>" --plugin reviewbench_plugin:ReviewBenchPlugin -n 5 -l 10 -k 3
 ```
 
-After execution, from the ReviewBench source checkout:
+These are native Harbor controls for **any** compatible built-in or custom
+harness: `-n` is concurrent trials, `-l` limits tasks after filtering, and `-k`
+repeats every selected task. Ten selected PRs and three attempts produce 30
+trials. Omit `-l` for all tasks; the full 219-PR dataset with `-k 3` needs 657
+successful trials. Harbor 0.24 requires an explicit `-p` or `-d` with `-l`
+even when the dataset is already present in the config.
+
+The plugin freezes the actual selection and round membership before execution,
+without changing task assets, judge prompts, or evaluation IDs. It is pinned
+to Harbor 0.24.0 and accepts one configured reviewer and one dataset per job.
+It does not install a harness or change the task's endpoint allowlists.
+
+Each round is scored independently; the final report contains per-round scores,
+their mean, population standard deviation, and the number of rounds where each
+ratio is defined. Undefined ratios are not zero and attempts are never pooled
+or selected by best score. Completion order does not determine round identity.
+
+After execution, use the retained run-specific metric and the included checker:
 
 ```powershell
-python scripts\harbor\check-job.py <kit-directory>\jobs\<job-name> <dataset-directory>\metric.py --output verified-metrics.json
+python .\check-job.py "<job-directory>" "<job-directory>\reviewbench-metric.py" --output .\verified-metrics.json
 ```
 
-Only complete, exception-free runs with the expected evaluation version pass.
-To smoke-test, obtain a limited task export from the maintainer and generate
-its own kit; do not submit a partial run of a full dataset as a complete score.
-For a full run, keep one attempt per task and do not add task filters. Require
-`complete=1`, `expected_prs=219`, and `scored_prs=219`; preserve failures and
-interrupted-run evidence instead of fabricating empty reviews. Use the metric
-for the exact executed judge/transport profile.
+Only complete, exception-free planned runs with the expected evaluation
+versions pass. Require `complete=1`, `expected_prs` equal to the intended
+selection, `n_attempts=k`, and `expected_trials=scored_trials=expected_prs*k`.
+For a full benchmark, also require `source_prs=expected_prs=219`, not just
+`full_dataset=1` on a smaller source export. Failures, duplicate attempts, and
+missing rounds withhold the summary. Preserve interrupted evidence; resume
+with the same configuration and plugin instead of fabricating empty reviews.
+Keep `reviewbench-plan.json` and `reviewbench-metric.py` inside the job for
+portable validation. `reviewbench-summary.json` contains the verified report.
+
+Without the plugin, `harbor run -c .\job.json` retains the original strict
+single-attempt, entire-dataset metric behavior.
 
 Inspect the job for secrets and private source before uploading:
 

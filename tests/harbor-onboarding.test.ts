@@ -44,7 +44,10 @@ test("onboarding emits a model-independent job with the approved metric and no c
   assert.equal(job.environment.type, "docker");
   assert.equal("env" in job.agents[0], false);
   assert.equal("verifier" in job, false);
-  assert.deepEqual(readdirSync(f.output).sort(), ["README.md", "custom_agent.py", "job.json", "kit.json"]);
+  assert.deepEqual(readdirSync(f.output).sort(), [
+    "README.md", "check-job.py", "custom_agent.py", "job.json", "kit.json",
+    "reviewbench-metric.py", "reviewbench_plugin.py",
+  ]);
   assert.equal(readFileSync(join(f.dataset, "one-pr", "task.toml"), "utf8"), original);
 });
 

@@ -69,6 +69,13 @@ export function createOnboardingKit(opts: OnboardingOptions, root = ROOT): void 
   }
   writeFileSync(join(output, "job.json"), JSON.stringify(config, null, 2) + "\n");
   writeFileSync(join(output, "custom_agent.py"), adapter);
+  for (const [source, destination] of [
+    ["reviewbench_plugin.py", "reviewbench_plugin.py"],
+    ["metric.py", "reviewbench-metric.py"],
+    ["check-job.py", "check-job.py"],
+  ]) {
+    writeFileSync(join(output, destination), readFileSync(join(root, "scripts", "harbor", source), "utf8"));
+  }
   writeFileSync(join(output, "README.md"), readme);
   writeFileSync(join(output, "kit.json"), JSON.stringify({
     schema_version: 1,
