@@ -238,6 +238,105 @@ test("BYO onboarding cannot write its output inside the source dataset", (t) => 
   assert.equal(existsSync(output), false);
 });
 
+test("BYO Azure model registration preserves judge code and fingerprints deployment settings", (t) => {
+  const f = byoFixture(t);
+  const modelConfig = join(f.root, "models.json");
+  const definition = {
+    providers: {
+      "azure-openai-responses": {
+        baseUrl: "https://judge.example.com/openai",
+        models: [{ id: "gpt-5.6-sol", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 8192 }],
+      },
+    },
+  };
+  writeFileSync(modelConfig, JSON.stringify(definition));
+  const judge = {
+    provider: "azure-openai-responses", model: "gpt-5.6-sol",
+    hosts: ["judge.example.com"], env: { AZURE_OPENAI_API_KEY: "RB_HARBOR_JUDGE_KEY" },
+    modelConfig,
+    settings: {
+      AZURE_OPENAI_BASE_URL: "https://judge.example.com/openai",
+      AZURE_OPENAI_API_VERSION: "2025-04-01-preview",
+      AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.6-sol=my-gpt56-deployment",
+    },
+  };
+  assert.throws(() => {
+    writeFileSync(modelConfig, JSON.stringify({
+      providers: { [judge.provider]: { models: definition.providers["azure-openai-responses"].models } },
+    }));
+    prepareByoJudge(f.approved, judge);
+  }, /explicit allowlisted baseUrl/);
+  writeFileSync(modelConfig, JSON.stringify(definition));
+  createOnboardingKit({
+    dataset: f.approved, output: f.output, agent: "copilot-cli",
+    model: "copilot/reviewer", environment: "docker", judge,
+  });
+  const files = prepareByoJudge(f.approved, judge);
+  const key = [...files.keys()].find(path => /^[^/]+\/task.toml$/.test(path))!.split("/")[0];
+  assert.deepEqual(JSON.parse(files.get(`${key}/tests/judge/.reviewbench-byo/models.json`)!),
+    definition);
+  const toml = files.get(`${key}/task.toml`)!;
+  assert.match(toml, /PI_CODING_AGENT_DIR = "\/tests\/judge\/\.reviewbench-byo"/);
+  assert.match(toml, /AZURE_OPENAI_DEPLOYMENT_NAME_MAP = "gpt-5.6-sol=my-gpt56-deployment"/);
+  assert.equal(toml.split("[verifier]")[0].includes("RB_HARBOR_JUDGE_KEY"), false);
+  for (const path of ["tests/test.sh", "tests/judge/scripts/eval/eval.ts", "tests/judge/scripts/eval/matcher.ts"]) {
+    assert.equal(files.get(`${key}/${path}`), readFileSync(join(f.approved, key, path), "utf8"));
+  }
+  const oldTask = JSON.parse(files.get(`${key}/tests/task.json`)!);
+  const changed = prepareByoJudge(f.approved, {
+    ...judge, settings: { ...judge.settings, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.6-sol=other-deployment" },
+  });
+  assert.notEqual(JSON.parse(changed.get(`${key}/tests/task.json`)!).evaluation_id, oldTask.evaluation_id);
+  definition.providers["azure-openai-responses"].models[0].maxTokens = 4096;
+  writeFileSync(modelConfig, JSON.stringify(definition));
+  const otherBudget = prepareByoJudge(f.approved, judge);
+  assert.notEqual(JSON.parse(otherBudget.get(`${key}/tests/task.json`)!).evaluation_id, oldTask.evaluation_id);
+  assert.equal(JSON.parse(files.get("byo-judge.json")!).judge_pricing_available, false);
+});
+
+test("BYO custom model definitions reject credentials, commands, transport overrides and wrong identities", (t) => {
+  const f = byoFixture(t);
+  const modelConfig = join(f.root, "models.json");
+  const model = { id: "my-explicit-model", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 8192 };
+  const judge = {
+    provider: "azure-openai-responses", model: model.id,
+    hosts: ["judge.example.com"], env: { AZURE_OPENAI_API_KEY: "RB_HARBOR_JUDGE_KEY" },
+    modelConfig,
+  };
+  for (const provider of [
+    { models: [model], apiKey: "!read-key" },
+    { models: [model], headers: { "api-key": "secret" } },
+    { models: [{ ...model, api: "openai-completions" }] },
+    { models: [{ ...model, id: "another-model" }] },
+    { models: [{ ...model, maxTokens: 0 }] },
+    { models: [{ ...model, maxTokens: 256000 }] },
+    { models: [{ ...model, reasoning: "yes" }] },
+    { models: [model], baseUrl: "https://not-allowlisted.example.com" },
+  ]) {
+    writeFileSync(modelConfig, JSON.stringify({
+      providers: { [judge.provider]: { baseUrl: "https://judge.example.com/openai", ...provider } },
+    }));
+    assert.throws(() => createOnboardingKit({
+      dataset: f.approved, output: f.output, agent: "copilot-cli",
+      model: "copilot/reviewer", environment: "docker", judge,
+    }));
+    assert.equal(existsSync(f.output), false);
+  }
+});
+
+test("BYO nonsecret settings reject secret keys, unsafe endpoints and ambiguous model deployment aliases", (t) => {
+  const f = byoFixture(t);
+  const invalid: Record<string, string>[] = [
+    { AZURE_OPENAI_API_KEY: "not-a-place-for-secrets" },
+    { AZURE_OPENAI_BASE_URL: "https://api.anthropic.com" },
+    { AZURE_OPENAI_API_VERSION: "!command" },
+    { AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "other-model=deployment" },
+  ];
+  for (const settings of invalid) {
+    assert.throws(() => prepareByoJudge(f.approved, { ...f.judge, settings }));
+  }
+});
+
 test("standalone validator accepts valid and empty findings, rejects identity and format errors", (t) => {
   const f = fixture(t);
   const path = join(f.root, "findings.json");

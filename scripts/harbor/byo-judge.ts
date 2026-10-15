@@ -11,6 +11,8 @@ export interface ByoJudgeOptions {
   model: string;
   hosts: string[];
   env: Record<string, string>;
+  modelConfig?: string;
+  settings?: Record<string, string>;
 }
 
 const API_KEYS: Record<string, string> = {
@@ -19,13 +21,63 @@ const API_KEYS: Record<string, string> = {
   deepseek: "DEEPSEEK_API_KEY", openrouter: "OPENROUTER_API_KEY",
 };
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function endpoint(value: string, hosts: string[]): void {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+      (url.port && url.port !== "443") || !hosts.includes(url.hostname)) {
+    throw new Error("Judge base URL must be HTTPS on an allowlisted host without credentials or query parameters");
+  }
+}
+
+function modelConfiguration(options: ByoJudgeOptions): { text?: string; pricingAvailable: boolean } {
+  if (!options.modelConfig) return { pricingAvailable: true };
+  const raw: unknown = JSON.parse(readFileSync(options.modelConfig, "utf8"));
+  if (!isRecord(raw) || Object.keys(raw).some(key => key !== "providers") || !isRecord(raw.providers) ||
+      Object.keys(raw.providers).length !== 1) {
+    throw new Error("Judge model config must declare only the selected provider");
+  }
+  const provider = raw.providers[options.provider];
+  if (!isRecord(provider) || Object.keys(provider).some(key => !["models", "baseUrl"].includes(key)) ||
+      !Array.isArray(provider.models) || provider.models.length !== 1 || !isRecord(provider.models[0])) {
+    throw new Error("Judge model config permits one model and an optional baseUrl, not credentials, commands or transport overrides");
+  }
+  if (provider.baseUrl !== undefined) {
+    if (typeof provider.baseUrl !== "string") throw new Error("Judge baseUrl must be a string");
+    endpoint(provider.baseUrl, options.hosts);
+  }
+  if (options.provider === "azure-openai-responses" && !provider.baseUrl) {
+    throw new Error("Custom Azure judge models require an explicit allowlisted baseUrl");
+  }
+  const model = provider.models[0];
+  const allowed = ["id", "name", "reasoning", "input", "cost", "contextWindow", "maxTokens", "thinkingLevelMap"];
+  if (model.id !== options.model || Object.keys(model).some(key => !allowed.includes(key))) {
+    throw new Error("Judge model definition must match the requested model and cannot override authentication or transport");
+  }
+  const contextWindow = model.contextWindow;
+  const maxTokens = model.maxTokens;
+  if (typeof contextWindow !== "number" || !Number.isSafeInteger(contextWindow) || contextWindow < 1 ||
+      typeof maxTokens !== "number" || !Number.isSafeInteger(maxTokens) || maxTokens < 1) {
+    throw new Error("Judge model config requires explicit positive context and output budgets");
+  }
+  if (maxTokens > contextWindow) {
+    throw new Error("Judge output budget exceeds its context budget");
+  }
+  if (model.cost !== undefined && (!isRecord(model.cost) ||
+      Object.keys(model.cost).some(key => !["input", "output", "cacheRead", "cacheWrite"].includes(key)) ||
+      ["input", "output", "cacheRead", "cacheWrite"].some(key =>
+        !isRecord(model.cost) || typeof model.cost[key] !== "number" ||
+        !Number.isFinite(model.cost[key]) || model.cost[key] < 0))) {
+    throw new Error("Judge model pricing must contain four finite nonnegative rates");
+  }
+  return { text: JSON.stringify(raw) + "\n", pricingAvailable: model.cost !== undefined };
+}
 
 export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<string, string> {
   const apiKey = API_KEYS[options.provider];
   if (!apiKey) throw new Error("BYO judge requires a supported API-key provider");
-  if (!ModelRegistry.inMemory(AuthStorage.inMemory()).find(options.provider, options.model)) {
-    throw new Error(`Judge model is not registered in the locked SDK: ${options.provider}/${options.model}`);
-  }
   if (!options.hosts.length || options.hosts.some(host =>
     !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9-]+$/.test(host))) {
     throw new Error("BYO judge requires exact endpoint hostnames, not URLs or wildcards");
@@ -35,6 +87,34 @@ export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || !/^RB_HARBOR_[A-Z0-9_]+$/.test(variable)) {
       throw new Error("Judge environment mappings must contain variable names, never credential values");
     }
+  }
+  const settings = options.settings ?? {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (options.provider !== "azure-openai-responses" || key in options.env ||
+        !["AZURE_OPENAI_BASE_URL", "AZURE_OPENAI_API_VERSION", "AZURE_OPENAI_DEPLOYMENT_NAME_MAP"].includes(key)) {
+      throw new Error("Only dedicated nonsecret Azure endpoint, API version and deployment settings are supported");
+    }
+    if (key === "AZURE_OPENAI_BASE_URL") endpoint(value, options.hosts);
+    if (key === "AZURE_OPENAI_API_VERSION" && !/^[a-z0-9.-]+$/.test(value)) {
+      throw new Error("Invalid Azure API version");
+    }
+    if (key === "AZURE_OPENAI_DEPLOYMENT_NAME_MAP") {
+      const [model, deployment, extra] = value.split("=");
+      if (model !== options.model || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(deployment ?? "") || extra !== undefined) {
+        throw new Error("Azure deployment mapping must explicitly map the requested model to one deployment");
+      }
+    }
+  }
+  const modelConfig = modelConfiguration(options);
+  if (modelConfig.text && "PI_CODING_AGENT_DIR" in options.env) {
+    throw new Error("Custom judge model registry owns PI_CODING_AGENT_DIR");
+  }
+  const registry = options.modelConfig
+    ? ModelRegistry.create(AuthStorage.inMemory(), options.modelConfig)
+    : ModelRegistry.inMemory(AuthStorage.inMemory());
+  if (registry.getError()) throw new Error(`Invalid judge model config: ${registry.getError()}`);
+  if (!registry.find(options.provider, options.model)) {
+    throw new Error(`Judge model is not registered in the locked SDK: ${options.provider}/${options.model}`);
   }
   const files = new Map<string, string>();
   function walk(directory: string, prefix = "") {
@@ -60,6 +140,8 @@ export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<
   const policy = {
     provider: options.provider, model: options.model,
     hosts: [...options.hosts].sort(), env: Object.entries(options.env).sort(),
+    ...(Object.keys(settings).length ? { settings: Object.entries(settings).sort() } : {}),
+    ...(modelConfig.text ? { model_registry_sha256: sha(modelConfig.text) } : {}),
   };
   const fingerprint = sha(JSON.stringify(policy));
   const tasks = [...files.keys()].filter(path => /^[^/]+\/task.toml$/.test(path));
@@ -114,9 +196,13 @@ export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<
         return header + body.replace(/^allowed_hosts = .+$/m, `allowed_hosts = ${JSON.stringify(policy.hosts)}`);
       });
     }
+    const verifierEnv = [
+      ...policy.env.map(([key, variable]) => `${key} = ${JSON.stringify(`\${${variable}}`)}`),
+      ...Object.entries(settings).sort().map(([key, value]) => `${key} = ${JSON.stringify(value)}`),
+      ...(modelConfig.text ? ['PI_CODING_AGENT_DIR = "/tests/judge/.reviewbench-byo"'] : []),
+    ];
     toml = toml.replace(/\[verifier\.env\]\n[\s\S]*?(?=\n\[|$)/,
-      "[verifier.env]\n" + policy.env.map(([key, variable]) =>
-        `${key} = ${JSON.stringify(`\${${variable}}`)}`).join("\n") + "\n");
+      "[verifier.env]\n" + verifierEnv.join("\n") + "\n");
     task.provider = options.provider;
     task.model = options.model;
     task.evaluation_id = Number.parseInt(sha(`${task.evaluation_id}\0byo-judge-v1\0${fingerprint}`).slice(0, 13), 16);
@@ -124,6 +210,7 @@ export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<
     expected[String(task.task_id)] = task.evaluation_id;
     files.set(path, toml);
     files.set(taskPath, JSON.stringify(task) + "\n");
+    if (modelConfig.text) files.set(`${key}/tests/judge/.reviewbench-byo/models.json`, modelConfig.text);
     const taskFiles = new Map([...files].filter(([path]) => path.startsWith(`${key}/`))
       .map(([path, value]) => [path.slice(key.length + 1), value]));
     if (!pattern.test(manifest)) throw new Error(`Missing canonical dataset task reference: ${key}`);
@@ -138,6 +225,7 @@ export function prepareByoJudge(dataset: string, options: ByoJudgeOptions): Map<
   files.set("byo-judge.json", JSON.stringify({
     schema_version: 1, ...policy, fingerprint, task_count: tasks.length,
     contains_credentials: false, official_submission: false,
+    judge_pricing_available: modelConfig.pricingAvailable,
   }, null, 2) + "\n");
   return files;
 }

@@ -92,6 +92,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       "judge-provider": { type: "string" }, "judge-model": { type: "string" },
       "judge-host": { type: "string", multiple: true },
       "judge-env": { type: "string", multiple: true },
+      "judge-model-config": { type: "string" },
+      "judge-setting": { type: "string", multiple: true },
     } });
     if (!values.dataset || !values.output) throw new Error("--dataset and --output are required");
     const environment = values.environment;
@@ -100,7 +102,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       throw new Error("--environment must be docker, daytona, modal, or e2b");
     }
     const byo = values["judge-provider"] || values["judge-model"] ||
-      values["judge-host"] || values["judge-env"];
+      values["judge-host"] || values["judge-env"] || values["judge-model-config"] || values["judge-setting"];
     let judge: ByoJudgeOptions | undefined;
     if (byo) {
       if (!values["judge-provider"] || !values["judge-model"]) {
@@ -112,9 +114,18 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         if (parts.length !== 2 || parts[0] in env) throw new Error("Invalid or duplicate --judge-env mapping");
         env[parts[0]] = parts[1];
       }
+      const settings: Record<string, string> = {};
+      for (const setting of values["judge-setting"] ?? []) {
+        const separator = setting.indexOf("=");
+        const key = setting.slice(0, separator);
+        if (separator < 1 || key in settings) throw new Error("Invalid or duplicate --judge-setting");
+        settings[key] = setting.slice(separator + 1);
+      }
       judge = {
         provider: values["judge-provider"], model: values["judge-model"],
         hosts: values["judge-host"] ?? [], env,
+        ...(values["judge-model-config"] ? { modelConfig: resolve(values["judge-model-config"]) } : {}),
+        ...(Object.keys(settings).length ? { settings } : {}),
       };
     }
     createOnboardingKit({

@@ -51,6 +51,15 @@ be recognized by the locked judge SDK; preparation rejects unknown models rather
 than substituting another one. Repeat `--judge-host` or `--judge-env` for required
 additional endpoints or provider-specific variables.
 
+Azure's nonsecret base URL, API version and model-to-deployment mapping can be
+pinned with repeated `--judge-setting KEY=VALUE` options. To register a model
+missing from the locked SDK, use `--judge-model-config <models.json>` with the
+restricted single-model definition documented in `docs/HARBOR.md`. The model
+definition and literal Azure settings are fingerprinted and delivered only to
+the verifier; judge prompts and scoring code remain unchanged. This does not
+prove endpoint availability. Missing pricing is explicitly marked unavailable,
+not evidence of free inference.
+
 Provision `RB_HARBOR_JUDGE_KEY` on the **Harbor orchestrator** through your secret
 manager before running the job. Its value is mapped to `ANTHROPIC_API_KEY` only
 in the separate verifier. Supply a different reviewer credential independently.

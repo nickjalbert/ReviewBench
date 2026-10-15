@@ -96,8 +96,48 @@ Supported API-key providers are `anthropic`, `openai`, `azure-openai-responses`,
 `google`, `deepseek`, and `openrouter`. Choose a model registered by the locked
 SDK; the example uses a registered model, not the private official judge.
 Additional provider-specific variables and exact endpoint hosts can be mapped
-with repeated `--judge-env` and `--judge-host` options. No custom model registry,
-private CAPI transport, or credential value is copied into the kit.
+with repeated `--judge-env` and `--judge-host` options. No personal model
+registry, private CAPI transport, or credential value is copied into the kit.
+
+For an Azure deployment, repeated `--judge-setting KEY=VALUE` options can pin
+the nonsecret `AZURE_OPENAI_BASE_URL`, `AZURE_OPENAI_API_VERSION`, and
+`AZURE_OPENAI_DEPLOYMENT_NAME_MAP` settings. The deployment map must explicitly
+map the requested model ID to one deployment, such as
+`gpt-5.6-sol=my-deployment`. These values become part of the profile fingerprint;
+do not use `--judge-setting` for API keys.
+
+If the locked SDK does not list your model, `--judge-model-config <models.json>`
+accepts an explicit, declarative SDK model definition for the selected provider
+and model. For example:
+
+```json
+{
+  "providers": {
+    "azure-openai-responses": {
+      "baseUrl": "https://your-resource.openai.azure.com/openai",
+      "models": [{
+        "id": "gpt-5.6-sol",
+        "reasoning": true,
+        "input": ["text"],
+        "contextWindow": 128000,
+        "maxTokens": 8192
+      }]
+    }
+  }
+}
+```
+
+The token limits here are explicit execution budgets, not a claim about the
+deployment's maximum capabilities. The definition permits one model and an
+optional allowlisted HTTPS base URL; credentials, shell commands, custom
+headers, and transport overrides are rejected. The SDK still uses its existing
+provider transport. The registry is copied only into the verifier and its
+contents are fingerprinted. This registers the requested model explicitly,
+never substitutes a catalog model under another name, and does not change
+ReviewBench's judge prompts or scoring code. Model availability and endpoint
+compatibility still require an authenticated test. If pricing is omitted,
+`byo-judge.json` marks it unavailable; SDK cost estimates must not be reported
+as actual spending.
 
 Explicit BYO options create `<kit>\dataset`, verify the source content digests,
 and change only the judge configuration in that private copy. The PR snapshots,
