@@ -16,6 +16,10 @@ to Harbor Hub. Execution uses CPU-only Linux x86-64 sandboxes; no GPU is needed.
 The adapter invokes the real interactive `/review` command, requires evidence
 that its code-review tool succeeded, and converts findings without an LLM
 rewrite. Copilot selects the review model; **do not pass `-m`**.
+The native review prompt explicitly requests the complete frozen base-to-HEAD
+diff, including large changes, rather than applying a repository's PR
+approval-size or split-request gates. It does not modify commits or narrow the
+review scope; refusals and incomplete reviews remain failures.
 The judge preserves the existing ReviewBench matcher, classifier, and scoring:
 adaptive thinking, low matcher effort, medium classifier effort, and an
 8,192-token output budget.

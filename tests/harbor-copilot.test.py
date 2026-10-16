@@ -339,6 +339,42 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeReviewTests(unittest.TestCase):
+    def test_native_review_requests_complete_frozen_diff_without_repository_size_gate(self):
+        base, head = "a" * 40, "b" * 40
+        command = native.review_command(base, head)
+        self.assertEqual(command[0], "copilot")
+        self.assertEqual(command[-2], "-i")
+        self.assertTrue(command[-1].startswith("/review "))
+        self.assertIn(base, command[-1])
+        self.assertIn(head, command[-1])
+        self.assertIn("Do not stop or request a split", command[-1])
+        self.assertIn("retaining the full pull-request scope", command[-1])
+        self.assertIn("if unable to complete, state that failure explicitly", command[-1])
+        for flag in ("--no-auto-update", "--deny-tool=web_fetch", "--deny-tool=web_search"):
+            self.assertIn(flag, command)
+        for flag in ("-p", "--prompt", "-m", "--model", "--no-custom-instructions"):
+            self.assertNotIn(flag, command)
+        for base, head in (("main", head), (base, "HEAD"), (None, head), (base, "b" * 41)):
+            with self.subTest(base=base, head=head), self.assertRaises(ValueError):
+                native.review_command(base, head)
+
+    def test_native_dispatch_accepts_supported_review_prompt_arguments_not_plain_prompts(self):
+        for transformed in (
+            "The user has requested a code review via the /review command.",
+            "The user has requested a code review via the /review command with this prompt: Review the full diff.",
+        ):
+            self.assertTrue(native.native_dispatch([
+                {"type": "user.message", "data": {"transformedContent": transformed}},
+            ], ""))
+        self.assertFalse(native.native_dispatch([
+            {"type": "user.message", "data": {"content": "Please review the code."}},
+        ], ""))
+        self.assertFalse(native.native_dispatch([
+            {"type": "assistant.message", "data": {
+                "transformedContent": "The user has requested a code review via the /review command.",
+            }},
+        ], ""))
+
     def test_issue_ranges_match_actual_hyphens_and_en_dashes(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
