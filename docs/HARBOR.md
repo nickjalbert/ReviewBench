@@ -77,7 +77,7 @@ private adapter download and no host-side Node.js requirement.
 While this change is under review, install from this PR's public Git ref:
 
 ```bash
-uv tool install --force --python 3.12 --with-executables-from harbor \
+uv tool install --force --refresh --python 3.12 --with-executables-from harbor \
   "reviewbench-harbor @ git+https://github.com/review-bench/ReviewBench.git@refs/pull/51/head"
 ```
 
@@ -94,11 +94,13 @@ is running.
 
 | Change | User action |
 | --- | --- |
-| Runtime, adapter, or Harbor compatibility | Run `uv tool upgrade reviewbench-harbor`; the package selects its tested Harbor dependency |
+| Runtime, adapter, or Harbor compatibility | Re-run installation with the chosen ReviewBench release; the package selects its tested Harbor dependency |
 | Dataset, reference findings, or judge policy | Select the newly published dataset version, such as `review-bench/reviewbench-public@v2`, once available; normally no tool reinstall is needed |
 | Judge API key | Set `RB_HARBOR_JUDGE_KEY` for the next run; no installation change |
 
 The PR ref above is a temporary pre-release source, not an immutable release.
+Re-running its install command explicitly refreshes the PR source; plain
+`uv tool upgrade` does not advance this Git ref.
 Released installations should use a versioned ReviewBench package artifact.
 Published dataset versions keep their frozen judge and task identities:
 upgrading the runtime does not silently replace the judge or dataset, and a
