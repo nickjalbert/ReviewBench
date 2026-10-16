@@ -40,6 +40,33 @@ does not automatically add a ReviewBench leaderboard row or make vendor-supplied
 scores authoritative; the complete run and scoring provenance must be checked
 before a submission is accepted.
 
+## Published standard dataset
+
+The [public 219-PR dataset](https://hub.harborframework.com/datasets/review-bench/reviewbench-public)
+is available as **`review-bench/reviewbench-public@v1`**, including all frozen PR
+identities, golden findings, the separate verifier, and the matching metric.
+It can be downloaded without Harbor sign-in or organization membership.
+
+Its default judge is **Anthropic Claude Opus 5**, exact API model ID
+`claude-opus-5`, through the standard `api.anthropic.com` endpoint. Export your
+own judge credential as `RB_HARBOR_JUDGE_KEY`; it becomes `ANTHROPIC_API_KEY`
+**only in the verifier**. Give the reviewer a separate credential. The explicit
+model registry enables adaptive thinking with low effort and an 8,192-token
+output execution budget, without substituting another model. The dataset's
+`profile.json` records the policy, SDK version, source commit, and public
+reviewer endpoint allowlist.
+
+The reviewer image is harness-neutral: bring a compatible installed Harbor
+agent or custom adapter that produces the documented findings. The dataset
+does not install a vendor harness or include private endpoints, credentials,
+or internal inference transports. Public task packages use their own
+`rb-public-` namespace, separate from private tuning profiles.
+
+This is an offline/self-funded scoring profile, not automatic leaderboard
+acceptance. Publication did not invoke paid models; your provider account must
+have access to the requested judge. Changing the judge or endpoint policies
+requires a separately versioned profile.
+
 ## Run without a source checkout
 
 Normal benchmark consumers do **not** need to clone ReviewBench, install Node.js,
@@ -62,10 +89,10 @@ source .venv/bin/activate
 uv pip install uv \
   "harbor @ git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b" \
   ./reviewbench_harbor-0.1.0rc1-py3-none-any.whl
-harbor auth login
-# Set the separate reviewer and verifier credentials required by your profile.
-# Replace these placeholders with your approved profile and installed agent.
-harbor run -d "<org>/<compatible-dataset>@<pinned-version>" \
+# Set your reviewer credential separately; provide an Anthropic key for the judge.
+: "${RB_HARBOR_JUDGE_KEY:?Set your verifier-only Anthropic API key}"
+# Replace the agent/model placeholders with a compatible installed reviewer.
+harbor run -d "review-bench/reviewbench-public@v1" \
   -a "<agent-name-or-module:Class>" -m "<provider/model>" -e docker \
   --plugin reviewbench_harbor.reviewbench_plugin:ReviewBenchPlugin \
   -n 1 -l 1 -k 1 --job-name smoke --jobs-dir jobs --yes
@@ -79,6 +106,8 @@ The command starts model execution; credentials, model costs, sandbox support,
 and dataset access remain the user's responsibility. For Docker, require a
 Linux daemon with working Harbor network allowlists. Never disable the policy.
 The dataset already contains the separate verifier and its judging dependencies.
+The public dataset needs no Harbor sign-in; private datasets and result uploads
+require an authorized Harbor account.
 The generic wheel does not contain vendor-specific adapters, private profiles,
 or credentials. A custom adapter must be installed into the **same environment**
 as Harbor, and the dataset's reviewer image and endpoint policy must support it.
@@ -155,11 +184,12 @@ From a ReviewBench source checkout, the same plugin can also be used directly:
 
 ```powershell
 $env:PYTHONPATH = (Get-Location).Path
-harbor run -d "review-bench/reviewbench@private-full219-v1" -a "<agent-name-or-module:Class>" -m "<provider/model>" --plugin scripts.harbor.reviewbench_plugin:ReviewBenchPlugin -n 5 -l 10 -k 3
+harbor run -d "review-bench/reviewbench-public@v1" -a "<agent-name-or-module:Class>" -m "<provider/model>" --plugin scripts.harbor.reviewbench_plugin:ReviewBenchPlugin -n 5 -l 10 -k 3
 ```
 
-That direct Hub example uses the dataset's original judge and requires its
-approved judge access. For a self-funded judge, use the BYO kit instead.
+That direct Hub example uses the published Claude Opus 5 judge and your own
+`RB_HARBOR_JUDGE_KEY`. For a different judge, obtain a separately versioned
+profile or use the canonical-export BYO workflow below.
 The plugin does not install arbitrary harnesses, provide credentials, change
 judge prompts, or relax the dataset's reviewer/verifier network policies.
 Your chosen harness must already be compatible with those policies and the
@@ -207,19 +237,22 @@ single-attempt, whole-dataset behavior.
 
 ## Self-funded BYO judge
 
-Use a canonical local export or a downloaded Hub dataset to generate a private
-kit with your own judge provider and API key:
+The published standard dataset already uses your own Claude Opus 5 API key;
+it does not require a BYO kit. To change the judge, use a clean canonical local
+export supplied by its maintainer, or a canonical Hub export containing only
+its manifest and metric. Do not layer another judge policy over an existing
+versioned BYO profile. These maintainer/local-customization commands require a
+source checkout:
 
 ```powershell
-harbor datasets download "review-bench/reviewbench@private-full219-v1" --output-dir .\.harbor\hub
-python scripts\harbor\check-format.py .\.harbor\hub\reviewbench --hub-ref "review-bench/reviewbench@private-full219-v1"
-npm run harbor:onboard -- --dataset .\.harbor\hub\reviewbench --output .\.harbor\byo-kit --agent "<agent-name>" --model "<reviewer-provider>/<reviewer-model>" --environment docker --judge-provider anthropic --judge-model claude-sonnet-4-6 --judge-host api.anthropic.com --judge-env ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY
+npm run harbor:onboard -- --dataset "<approved-canonical-export>" --output .\.harbor\byo-kit --agent "<agent-name>" --model "<reviewer-provider>/<reviewer-model>" --environment docker --judge-provider anthropic --judge-model claude-sonnet-4-6 --judge-host api.anthropic.com --judge-env ANTHROPIC_API_KEY=RB_HARBOR_JUDGE_KEY
 harbor run -c .\.harbor\byo-kit\job.json
 python scripts\harbor\check-job.py .\.harbor\byo-kit\jobs\reviewbench .\.harbor\byo-kit\dataset\metric.py --output .\.harbor\byo-kit\verified-metrics.json
 ```
 
-Harbor 0.24 omits `dataset.toml` from Hub downloads. The `--hub-ref` check above
-restores that manifest from the same pinned Hub version only after validating
+Harbor 0.24 omits `dataset.toml` from Hub downloads. For a canonical Hub export,
+`check-format.py <directory> --hub-ref "<org>/<dataset>@<version>"` restores that
+manifest from the same pinned Hub version only after validating
 all downloaded task and metric digests and exact task coverage. It requires
 Harbor installed in that Python environment and Hub access. Local exports
 already have a manifest; omit this restoration step for them.
@@ -533,14 +566,14 @@ separate. The chosen review harness must be compatible with the dataset's
 reviewer image and endpoint policies; onboarding does not install a vendor
 harness or relax those policies.
 
-For a Hub dataset, sign in with an authorized account, download the approved
-version, and verify its content before generating a kit. Replace both values
-below with the approved reference and the actual downloaded dataset directory:
+For a Hub dataset, download the approved version and verify its content before
+generating a kit. The public standard dataset needs no sign-in; private profiles
+require `harbor auth login` with an authorized account. This reference-only kit
+example uses the public profile without changing its judge:
 
 ```powershell
-$datasetRef = "<org>/<dataset>@<approved-version>"
-$datasetDir = "<downloaded-dataset-directory>"
-harbor auth login
+$datasetRef = "review-bench/reviewbench-public@v1"
+$datasetDir = ".\.harbor\hub\reviewbench-public"
 harbor datasets download $datasetRef --output-dir .\.harbor\hub
 python scripts\harbor\check-format.py $datasetDir --hub-ref $datasetRef
 npm run harbor:onboard -- --dataset $datasetDir --output .\.harbor\full-kit --agent "<agent-name>" --model "<provider>/<reviewer-model>" --environment docker
@@ -549,9 +582,10 @@ harbor run -c .\.harbor\full-kit\job.json -p $datasetDir --plugin scripts.harbor
 ```
 
 For a local export with an existing manifest, omit the download and `--hub-ref`
-restoration and validate it with `check-format.py <directory>`. Use the BYO
-options above if the original judge connection is unavailable; that creates a
-separately fingerprinted private profile rather than reusing its evaluation IDs.
+restoration and validate it with `check-format.py <directory>`. If another judge
+connection is needed, use the BYO options above with a clean canonical export,
+not the already-versioned public profile. This creates new evaluation IDs
+rather than silently changing the published judge policy.
 
 Run on an approved Linux orchestrator or compatible cloud sandbox. Allocate
 enough time, disk, model quota, and runner resources for the requested
