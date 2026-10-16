@@ -51,8 +51,9 @@ Its default judge is **Anthropic Claude Opus 5**, exact API model ID
 `claude-opus-5`, through the standard `api.anthropic.com` endpoint. Export your
 own judge credential as `RB_HARBOR_JUDGE_KEY`; it becomes `ANTHROPIC_API_KEY`
 **only in the verifier**. Give the reviewer a separate credential. The explicit
-model registry enables adaptive thinking with low effort and an 8,192-token
-output execution budget, without substituting another model. The dataset's
+model registry enables adaptive thinking with low matcher effort, medium
+classifier effort, and an 8,192-token output execution budget, without
+substituting another model. The dataset's
 `profile.json` records the policy, SDK version, source commit, and public
 reviewer endpoint allowlist.
 
