@@ -297,6 +297,42 @@ test("BYO Azure model registration preserves judge code and fingerprints deploym
   assert.equal(JSON.parse(files.get("byo-judge.json")!).judge_pricing_available, false);
 });
 
+test("BYO Anthropic adaptive thinking is explicit and fingerprinted without changing judge code", (t) => {
+  const f = byoFixture(t);
+  const modelConfig = join(f.root, "models.json");
+  const model = {
+    id: "claude-opus-5", reasoning: true, input: ["text"],
+    contextWindow: 1000000, maxTokens: 8192, compat: { forceAdaptiveThinking: true },
+  };
+  const judge = {
+    provider: "anthropic", model: model.id,
+    hosts: ["api.anthropic.com"], env: { ANTHROPIC_API_KEY: "RB_HARBOR_JUDGE_KEY" }, modelConfig,
+  };
+  const definition = { providers: { anthropic: { models: [model] } } };
+  writeFileSync(modelConfig, JSON.stringify(definition));
+  const files = prepareByoJudge(f.approved, judge);
+  const key = [...files.keys()].find(path => /^[^/]+\/task.toml$/.test(path))!.split("/")[0];
+  assert.deepEqual(JSON.parse(files.get(`${key}/tests/judge/.reviewbench-byo/models.json`)!),
+    definition);
+  assert.equal(JSON.parse(files.get(`${key}/tests/task.json`)!).model, "claude-opus-5");
+  for (const path of ["tests/test.sh", "tests/judge/scripts/eval/matcher.ts"]) {
+    assert.equal(files.get(`${key}/${path}`), readFileSync(join(f.approved, key, path), "utf8"));
+  }
+  model.compat.forceAdaptiveThinking = false;
+  writeFileSync(modelConfig, JSON.stringify(definition));
+  const other = prepareByoJudge(f.approved, judge);
+  assert.notEqual(
+    JSON.parse(files.get(`${key}/tests/task.json`)!).evaluation_id,
+    JSON.parse(other.get(`${key}/tests/task.json`)!).evaluation_id,
+  );
+  for (const compat of [{}, { forceAdaptiveThinking: "true" }, { supportsToolChoice: true }]) {
+    writeFileSync(modelConfig, JSON.stringify({
+      providers: { anthropic: { models: [{ ...model, compat }] } },
+    }));
+    assert.throws(() => prepareByoJudge(f.approved, judge), /forceAdaptiveThinking/);
+  }
+});
+
 test("BYO custom model definitions reject credentials, commands, transport overrides and wrong identities", (t) => {
   const f = byoFixture(t);
   const modelConfig = join(f.root, "models.json");
@@ -314,6 +350,7 @@ test("BYO custom model definitions reject credentials, commands, transport overr
     { models: [{ ...model, maxTokens: 0 }] },
     { models: [{ ...model, maxTokens: 256000 }] },
     { models: [{ ...model, reasoning: "yes" }] },
+    { models: [{ ...model, compat: { forceAdaptiveThinking: true } }] },
     { models: [model], baseUrl: "https://not-allowlisted.example.com" },
   ]) {
     writeFileSync(modelConfig, JSON.stringify({

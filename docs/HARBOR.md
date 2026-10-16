@@ -283,6 +283,12 @@ compatibility still require an authenticated test. If pricing is omitted,
 `byo-judge.json` marks it unavailable; SDK cost estimates must not be reported
 as actual spending.
 
+For an Anthropic model requiring adaptive thinking but missing from the locked
+catalog, its explicit model definition may include
+`"compat": { "forceAdaptiveThinking": true }`. Only that boolean compatibility
+flag is accepted; arbitrary transport overrides remain rejected. The pinned SDK
+supports this flag without changing the requested API model ID.
+
 Explicit BYO options create `<kit>\dataset`, verify the source content digests,
 and change only the judge configuration in that private copy. The PR snapshots,
 goldens, reviewer instructions, and reviewer allowlist remain unchanged.

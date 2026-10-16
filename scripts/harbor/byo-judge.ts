@@ -52,9 +52,16 @@ function modelConfiguration(options: ByoJudgeOptions): { text?: string; pricingA
     throw new Error("Custom Azure judge models require an explicit allowlisted baseUrl");
   }
   const model = provider.models[0];
-  const allowed = ["id", "name", "reasoning", "input", "cost", "contextWindow", "maxTokens", "thinkingLevelMap"];
+  const allowed = ["id", "name", "reasoning", "input", "cost", "contextWindow", "maxTokens", "thinkingLevelMap", "compat"];
   if (model.id !== options.model || Object.keys(model).some(key => !allowed.includes(key))) {
     throw new Error("Judge model definition must match the requested model and cannot override authentication or transport");
+  }
+  if (model.compat !== undefined && (
+    options.provider !== "anthropic" || !isRecord(model.compat) ||
+    Object.keys(model.compat).some(key => key !== "forceAdaptiveThinking") ||
+    typeof model.compat.forceAdaptiveThinking !== "boolean"
+  )) {
+    throw new Error("Judge compatibility permits only Anthropic forceAdaptiveThinking, not transport overrides");
   }
   const contextWindow = model.contextWindow;
   const maxTokens = model.maxTokens;
