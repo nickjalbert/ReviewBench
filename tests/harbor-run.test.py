@@ -19,6 +19,12 @@ os.environ["HARBOR_TELEMETRY"] = "off"
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "scripts" / "harbor"
+PLUGIN = "reviewbench_plugin:ReviewBenchPlugin"
+if os.environ.get("REVIEWBENCH_TEST_INSTALLED") == "1":
+    import reviewbench_harbor
+
+    SOURCE = Path(reviewbench_harbor.__file__).resolve().parent
+    PLUGIN = "reviewbench_harbor.reviewbench_plugin:ReviewBenchPlugin"
 sys.path.insert(0, str(SOURCE))
 METRIC = runpy.run_path(str(SOURCE / "metric.py"))
 CHECK = runpy.run_path(str(SOURCE / "check-job.py"))["check_job"]
@@ -218,7 +224,7 @@ class NativeHarborTests(unittest.TestCase):
 
         arguments = [
             "run", "-c", str(self.config), "-p", str(self.dataset), "-n", "2", "-l", "2", "-k", "3",
-            "--plugin", "reviewbench_plugin:ReviewBenchPlugin", "--yes",
+            "--plugin", PLUGIN, "--yes",
         ]
         if custom:
             arguments += ["-a", "fixture_agent:CustomAgent"]

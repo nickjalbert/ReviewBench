@@ -40,7 +40,56 @@ does not automatically add a ReviewBench leaderboard row or make vendor-supplied
 scores authoritative; the complete run and scoring provenance must be checked
 before a submission is accepted.
 
-## Generate a user kit
+## Run without a source checkout
+
+Normal benchmark consumers do **not** need to clone ReviewBench, install Node.js,
+run `npm ci`, or generate a kit. Install the generic Python runtime alongside
+the pinned Harbor SDK, obtain an approved compatible dataset reference from its
+maintainer, and bring an installed Harbor agent.
+
+The experimental `harbor-runtime-v0.1.0rc1` GitHub prerelease supplies the
+`reviewbench-harbor` wheel and `SHA256SUMS`. On a Linux runner with Python 3.12,
+Git, `uv`, and a supported sandbox:
+
+```bash
+set -euo pipefail
+mkdir reviewbench-run && cd reviewbench-run
+curl -fLO https://github.com/review-bench/ReviewBench/releases/download/harbor-runtime-v0.1.0rc1/reviewbench_harbor-0.1.0rc1-py3-none-any.whl
+curl -fLO https://github.com/review-bench/ReviewBench/releases/download/harbor-runtime-v0.1.0rc1/SHA256SUMS
+sha256sum -c SHA256SUMS
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install uv \
+  "harbor @ git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b" \
+  ./reviewbench_harbor-0.1.0rc1-py3-none-any.whl
+harbor auth login
+# Set the separate reviewer and verifier credentials required by your profile.
+# Replace these placeholders with your approved profile and installed agent.
+harbor run -d "<org>/<compatible-dataset>@<pinned-version>" \
+  -a "<agent-name-or-module:Class>" -m "<provider/model>" -e docker \
+  --plugin reviewbench_harbor.reviewbench_plugin:ReviewBenchPlugin \
+  -n 1 -l 1 -k 1 --job-name smoke --jobs-dir jobs --yes
+reviewbench-check-job jobs/smoke jobs/smoke/reviewbench-metric.py \
+  --output verified-metrics.json
+```
+
+Installing the pinned SDK may fetch Harbor's own source automatically; no
+manual ReviewBench checkout or host-side JavaScript installation is needed.
+The command starts model execution; credentials, model costs, sandbox support,
+and dataset access remain the user's responsibility. For Docker, require a
+Linux daemon with working Harbor network allowlists. Never disable the policy.
+The dataset already contains the separate verifier and its judging dependencies.
+The generic wheel does not contain vendor-specific adapters, private profiles,
+or credentials. A custom adapter must be installed into the **same environment**
+as Harbor, and the dataset's reviewer image and endpoint policy must support it.
+
+`-n`, `-l`, and `-k` below apply unchanged to this installed plugin. Omit `-m`
+only for an agent that selects and records its own model. The plugin retains the
+selected profile's metric in the job; use that retained metric for validation.
+`reviewbench-check-dataset` also provides the export/digest check described below,
+without a source checkout.
+
+## Generate a user kit (maintainers and local customization)
 
 Given an approved local task export, create a model-independent user kit:
 
