@@ -15,6 +15,17 @@ const q = JSON.stringify;
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const text = (path: string) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
 const numericId = (value: string) => Number.parseInt(sha(value).slice(0, 13), 16);
+const OPUS_5_MODELS = JSON.stringify({
+  providers: { anthropic: {
+    baseUrl: "https://api.anthropic.com",
+    models: [{
+      id: "claude-opus-5", name: "Claude Opus 5", reasoning: true, input: ["text"],
+      contextWindow: 1000000, maxTokens: 8192,
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      compat: { forceAdaptiveThinking: true },
+    }],
+  } },
+}) + "\n";
 
 export interface ExportOptions {
   output: string;
@@ -72,6 +83,11 @@ function validateOptions(opts: ExportOptions): void {
     }
   }
   if (!Object.keys(opts.judgeEnv).length) throw new Error("At least one --judge-env KEY=HOST_VARIABLE is required");
+  if (opts.provider === "anthropic" && opts.model === "claude-opus-5" &&
+      (!opts.judgeEnv.ANTHROPIC_API_KEY || "PI_CODING_AGENT_DIR" in opts.judgeEnv ||
+       opts.judgeHosts.length !== 1 || opts.judgeHosts[0] !== "api.anthropic.com")) {
+    throw new Error("The standard Opus 5 judge requires api.anthropic.com and a dedicated Anthropic key mapping");
+  }
   for (const [key, hostVariable] of Object.entries(opts.judgeEnv)) {
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || !/^RB_HARBOR_[A-Z0-9_]+$/.test(hostVariable)) {
       throw new Error("--judge-env must map KEY to a dedicated RB_HARBOR_* host variable, not a secret value");
@@ -157,6 +173,7 @@ export function exportDataset(opts: ExportOptions, root = ROOT): { tasks: number
   if (!selected.length) throw new Error("Cannot export an empty dataset");
   const sources = judgeSources(root);
   const sourceHash = packageDigest(sources);
+  const standardJudge = opts.provider === "anthropic" && opts.model === "claude-opus-5";
   const files = new Map<string, string>();
   const expected: Record<string, number> = {};
   const taskRefs: string[] = [];
@@ -218,6 +235,7 @@ allowed_hosts = ${q(opts.judgeHosts)}
 
 [verifier.env]
 ${Object.entries(opts.judgeEnv).sort().map(([key, variable]) => `${key} = ${q(`\${${variable}}`)}`).join("\n")}
+${standardJudge ? 'PI_CODING_AGENT_DIR = "/tests/judge/.reviewbench-models"\n' : ""}
 
 [verifier.environment]
 workdir = "/tests/judge"
@@ -243,6 +261,7 @@ COPY . /tests/
     taskFiles.set(`tests/golden/${key}.json`, goldenText);
     taskFiles.set("tests/test.sh", "#!/bin/bash\nset -euo pipefail\ncd /tests/judge\nexec node --import tsx scripts/harbor/verify.ts /tests/task.json\n");
     for (const [path, contents] of sources) taskFiles.set(`tests/judge/${path}`, contents);
+    if (standardJudge) taskFiles.set("tests/judge/.reviewbench-models/models.json", OPUS_5_MODELS);
     const oracle = {
       pr: golden.pr, agent: "harbor-oracle",
       findings: golden.findings.filter((f) => f.tp_fp === "tp").map((f) => ({

@@ -44,9 +44,9 @@ For each pull request, the benchmark provides a human-reviewed golden set of cod
   published so the labeling process can be inspected and reproduced.
 - **[The judging CLI](#evaluate-your-reviewer-offline).**
   Privately score findings for tuning with an LLM judge you choose.
-- **[Experimental Harbor adapter](docs/HARBOR.md).** Export frozen PR tasks
-  with an isolated verifier and ReviewBench-compatible aggregate metrics for
-  local Harbor runs and private result uploads.
+- **[Public Harbor benchmark and Copilot CLI adapter](docs/HARBOR.md).**
+  Run the public 219-PR dataset with native Copilot `/review`, a separate
+  Claude Opus 5 judge, verified metrics, and optional private Hub uploads.
 
 The full corpus manifest and all golden findings are public.
 

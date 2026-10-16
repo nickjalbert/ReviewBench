@@ -5,11 +5,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 import { aggregate, scorePR, type ClassifiedFinding, type PRScoreResult } from "../scripts/eval/scorer.js";
 import { getFullDiff, validateSnapshot } from "../scripts/extraction/git.js";
 import { exportDataset, packageDigest, type ExportOptions } from "../scripts/harbor/export.js";
 import { toRewards } from "../scripts/harbor/rewards.js";
+import { validateFindings } from "../scripts/harbor/validate-findings.js";
 import { validateCandidate, verifyTask } from "../scripts/harbor/verify.js";
 import { prKey, type ManifestEntry } from "../scripts/lib/types.js";
 
@@ -216,6 +218,63 @@ test("Harbor task hashing matches the documented path/content algorithm", () => 
   const hash = (value: string) => createHash("sha256").update(value).digest("hex");
   assert.equal(packageDigest(new Map([["b.txt", "b"], ["a.txt", "a"]])),
     hash(`a.txt\0${hash("a")}\nb.txt\0${hash("b")}\n`));
+});
+
+test("Standard public exports register the exact Opus 5 judge only in the verifier", (t) => {
+  const dir = fixture(t);
+  sourceFixture(dir);
+  const opts: ExportOptions = {
+    ...options(join(dir, "export")), provider: "anthropic", model: "claude-opus-5",
+    judgeHosts: ["api.anthropic.com"], judgeEnv: { ANTHROPIC_API_KEY: "RB_HARBOR_JUDGE_KEY" },
+  };
+  exportDataset(opts, dir);
+  const task = join(opts.output, prKey(pr));
+  const modelsPath = join(task, "tests", "judge", ".reviewbench-models", "models.json");
+  const models = readFileSync(modelsPath, "utf8");
+  assert.equal(createHash("sha256").update(models).digest("hex"),
+    "45e00e73f4862bb83b847a210cb68b7a162d74ab7acb2dc1d3712ebe445b0c68");
+  const registry = ModelRegistry.create(AuthStorage.create(join(dir, "auth.json")), modelsPath);
+  const model = registry.find("anthropic", "claude-opus-5");
+  assert.ok(model, "the pinned judge SDK must load the exact model ID");
+  assert.equal(model.baseUrl, "https://api.anthropic.com");
+  assert.equal(model.maxTokens, 8192);
+  assert.equal(model.contextWindow, 1000000);
+  assert.ok(model.compat && "forceAdaptiveThinking" in model.compat);
+  assert.equal(model.compat.forceAdaptiveThinking, true);
+  const config = readFileSync(join(task, "task.toml"), "utf8");
+  assert.match(config, /ANTHROPIC_API_KEY = "\$\{RB_HARBOR_JUDGE_KEY\}"/);
+  assert.match(config, /PI_CODING_AGENT_DIR = "\/tests\/judge\/\.reviewbench-models"/);
+  const reviewer = config.split("[verifier]")[0];
+  assert.doesNotMatch(reviewer, /ANTHROPIC_API_KEY|PI_CODING_AGENT_DIR/);
+  assert.deepEqual(readdirSync(join(task, "environment")).sort(), ["Dockerfile", "pr.json"]);
+  assert.doesNotMatch(readFileSync(join(task, "environment", "Dockerfile"), "utf8"), /models\.json|ANTHROPIC_API_KEY/);
+  const invalidPolicies: Partial<ExportOptions>[] = [
+    { judgeHosts: ["other.example.com"] },
+    { judgeHosts: ["api.anthropic.com", "other.example.com"] },
+    { judgeEnv: { OPENAI_API_KEY: "RB_HARBOR_JUDGE_KEY" } },
+    { judgeEnv: { ...opts.judgeEnv, PI_CODING_AGENT_DIR: "RB_HARBOR_OVERRIDE" } },
+  ];
+  for (const changes of invalidPolicies) {
+    assert.throws(() => exportDataset({ ...opts, ...changes, output: join(dir, "invalid") }, dir),
+      /standard Opus 5 judge/);
+  }
+});
+
+test("Standalone findings validation checks frozen identity without inference", (t) => {
+  const dir = fixture(t);
+  const candidate = join(dir, "findings.json");
+  const metadata = join(dir, "pr.json");
+  write(metadata, pr);
+  write(candidate, { pr, agent: "fixture", findings: [] });
+  validateFindings(candidate, metadata);
+  write(candidate, { pr: { ...pr, head: "c".repeat(40) }, agent: "fixture", findings: [] });
+  assert.throws(() => validateFindings(candidate, metadata));
+  write(candidate, { pr, agent: "fixture", findings: [] });
+  for (const changed of [{ base: "main" }, { head: "HEAD" }, { repo: "https://other.example/repo" },
+                         { pr_number: 0 }, { pr_number: "1" }]) {
+    write(metadata, { ...pr, ...changed });
+    assert.throws(() => validateFindings(candidate, metadata), /frozen repo/);
+  }
 });
 
 test("Harbor exporter rejects overwrites, unsafe inputs, mutable images, and inconsistent labels", (t) => {

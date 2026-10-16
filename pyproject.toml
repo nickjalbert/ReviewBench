@@ -4,22 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reviewbench-harbor"
-version = "0.1.0rc1"
-description = "ReviewBench run planning and strict scoring for Harbor"
+version = "0.1.0rc2"
+description = "ReviewBench Harbor runtime and native Copilot CLI review adapter"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = ["harbor==0.24.0"]
+dependencies = ["harbor==0.24.0", "json5==0.12.1"]
 
 [project.scripts]
 reviewbench-check-job = "reviewbench_harbor:check_job_main"
 reviewbench-check-dataset = "reviewbench_harbor:check_dataset_main"
 
 [tool.setuptools]
-packages = ["reviewbench_harbor"]
+packages = ["reviewbench_harbor", "reviewbench_copilot"]
 include-package-data = false
 
 [tool.setuptools.package-dir]
 reviewbench_harbor = "scripts/harbor"
+reviewbench_copilot = "scripts/harbor/copilot"
 
 [tool.setuptools.package-data]
 reviewbench_harbor = ["check-job.py"]
