@@ -86,9 +86,11 @@ jobs:
       - name: Check installed runtime outside the source checkout
         run: |
           python -m pip wheel --no-deps . --wheel-dir .harbor/wheels
-          python -m pip install --no-deps .harbor/wheels/*.whl
+          wheel="$PWD/.harbor/wheels/reviewbench_harbor-0.1.0rc1-py3-none-any.whl"
           tests="$PWD/tests/harbor-run.test.py"
           cd "$(mktemp -d)"
+          unset PYTHONPATH
+          python -m pip install --no-deps "$wheel"
           python -c "from reviewbench_harbor.reviewbench_plugin import ReviewBenchPlugin; from pathlib import Path; import reviewbench_harbor; root = Path(reviewbench_harbor.__file__).parent; assert all((root / name).is_file() for name in ('metric.py', 'check-job.py'))"
           reviewbench-check-job --help
           reviewbench-check-dataset --help
