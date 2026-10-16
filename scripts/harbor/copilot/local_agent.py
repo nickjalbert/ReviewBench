@@ -149,8 +149,9 @@ class NativeCopilotReview(BaseAgent):
         )
         if result.return_code:
             raise RuntimeError(f"Native Copilot reviewer setup failed: {result.stderr or result.stdout}")
-        lines = result.stdout.splitlines()
-        if not lines or lines[0].strip() != f"GitHub Copilot CLI {COPILOT_VERSION}.":
+        banners = [line.strip() for line in result.stdout.splitlines()
+                   if line.strip().startswith("GitHub Copilot CLI ")]
+        if banners != [f"GitHub Copilot CLI {COPILOT_VERSION}."]:
             raise RuntimeError(f"Pinned Copilot CLI version mismatch: {result.stdout!r}")
         await environment.upload_file(Path(__file__).with_name("native_review.py"), "/tmp/native_review.py")
 

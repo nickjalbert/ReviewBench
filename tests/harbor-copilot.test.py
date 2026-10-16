@@ -246,6 +246,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         for install in (
             result(return_code=1, stderr="Frozen HEAD mismatch"),
             result("GitHub Copilot CLI 1.0.960.\n"), result("GitHub Copilot CLI 1.0.98.\n"), result(""),
+            result("GitHub Copilot CLI 1.0.96.\nGitHub Copilot CLI 1.0.98.\n"),
         ):
             with self.subTest(install=install), tempfile.TemporaryDirectory() as temp, patch.object(
                 adapter, "copilot_archive", return_value=Path(temp) / "archive",
@@ -257,6 +258,21 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(RuntimeError):
                     await adapter.NativeCopilotReview(logs_dir=Path(temp)).setup(environment)
                 self.assertEqual(environment.upload_file.await_count, 1)
+
+    async def test_setup_accepts_extraction_notice_before_exact_version_banner(self):
+        environment = SimpleNamespace(
+            exec=AsyncMock(side_effect=[
+                result("Linux x86_64\n"),
+                result("Package extraction took 5370ms\nGitHub Copilot CLI 1.0.96.\n"
+                       "Run 'copilot update' to check for updates.\n"),
+            ]),
+            upload_file=AsyncMock(),
+        )
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            adapter, "copilot_archive", return_value=Path(temp) / "archive",
+        ):
+            await adapter.NativeCopilotReview(logs_dir=Path(temp)).setup(environment)
+            self.assertEqual(environment.upload_file.await_count, 2)
 
     async def test_run_forwards_only_reviewer_token_and_preserves_native_proof(self):
         proof = {
@@ -339,7 +355,77 @@ class NativeReviewTests(unittest.TestCase):
                     self.assertEqual((findings[0]["file"], findings[0]["start_line"], findings[0]["end_line"]),
                                      ("source.py", start, end))
 
-    def test_only_exact_empty_result_is_empty_and_invalid_locations_fail(self):
+    def test_explicit_empty_results_allow_scope_and_validation_metadata(self):
+        metadata = (
+            "**Review scope:** Clean working tree; reviewed `main...HEAD`.",
+            "Reviewed `main...HEAD`; the working tree is clean. Validation was limited to static inspection.",
+            "**Review limitations:** Build tools are unavailable.",
+            "Review limitation: Tests could not run.",
+            "Validation: Focused checks passed.",
+            "The working tree is clean; reviewed `main...HEAD`.",
+            "Validation limited to static inspection: build tools are unavailable.",
+            "\u2713 Review conducted following guidelines defined in `.github/copilot-instructions.md`",
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            for empty in native.EMPTY_RESULTS:
+                for note in metadata:
+                    with self.subTest(empty=empty, note=note):
+                        self.assertEqual(native.findings_from_review(f"{note}\n\n{empty}", repo), [])
+                        self.assertEqual(native.findings_from_review(f"{empty}\n\n{note}", repo), [])
+
+    def test_unknown_refused_or_contradictory_outputs_never_become_empty_reviews(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            for text in (
+                "", "No issues.", "Review paused: the diff exceeds the review limit.",
+                f"{native.EMPTY}\n\nReview paused: No correctness review was performed.",
+                f"{native.EMPTY}\n\nFound a bug in source.py:1.",
+                f"{native.EMPTY}\n\n## Issue: Missing fields",
+                f"{native.EMPTY}\n\n{native.EMPTY}",
+            ):
+                with self.subTest(text=text), self.assertRaises(ValueError):
+                    native.findings_from_review(text, repo)
+
+    def test_preambles_multiple_ranges_and_files_preserve_one_issue_and_raw_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            for name in ("source.py", "other.py"):
+                (repo / name).write_text("first\nsecond\nthird\n")
+            for location in (
+                "**File:** `source.py:1, 2\u20133`",
+                "**Files:**\n- source.py:1\n- `other.py:2\u20133`",
+            ):
+                with self.subTest(location=location):
+                    text = (
+                        "**Reviewed scope:** Clean worktree; reviewed `main...HEAD`.\n\n"
+                        f"## Issue: Fixture\n{location}\n**Severity:** Medium\n"
+                        "**Problem:** Broken\n**Evidence:** Source\n**Suggested fix:** Fix\n\n"
+                        "**Validation limitation:** Tooling unavailable."
+                    )
+                    findings = native.findings_from_review(text, repo)
+                    self.assertEqual(len(findings), 1)
+                    self.assertEqual((findings[0]["file"], findings[0]["start_line"], findings[0]["end_line"]),
+                                     ("source.py", 1, 1))
+                    self.assertEqual(findings[0]["message"], text[text.index("## Issue:"):])
+
+    def test_invalid_or_missing_secondary_locations_are_not_discarded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            (repo / "source.py").write_text("first\nsecond\n")
+            for location in (
+                "**File:** source.py:1,99", "**File:** source.py:1,", "**File:** source.py:1-2-extra",
+                "**File:**",
+                "**Files:**\n- source.py:1\n- ../outside.py:1",
+                "**Files:**\n- source.py:1\n- missing.py:1",
+            ):
+                with self.subTest(location=location), self.assertRaises(ValueError):
+                    native.findings_from_review(
+                        f"## Issue: Invalid\n{location}\n**Severity:** High\n"
+                        "**Problem:** Broken\n**Evidence:** Source\n**Suggested fix:** Fix\n", repo,
+                    )
+
+    def test_empty_result_and_invalid_locations(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
             (repo / "source.py").write_text("first\n")

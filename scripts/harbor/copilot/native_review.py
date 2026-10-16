@@ -11,6 +11,11 @@ import time
 
 
 EMPTY = "No significant issues found in the reviewed changes."
+EMPTY_RESULTS = {
+    EMPTY,
+    "No actionable findings in the reviewed changes.",
+    "No actionable, high-confidence bugs or logic errors found in the reviewed changes.",
+}
 
 
 def require_no_judge_credentials():
@@ -22,24 +27,68 @@ def require_no_judge_credentials():
             raise RuntimeError(f"Judge credential exposed to reviewer: {key}")
 
 
-def findings_from_review(text, repo):
-    text = text.strip()
-    if text == EMPTY:
-        return []
-    chunks = re.split(r"(?m)^## Issue:\s*", text)
-    if len(chunks) < 2 or chunks[0].strip():
-        raise ValueError("Unrecognized native code-review output; refusing empty fallback")
-    findings = []
-    for chunk in chunks[1:]:
-        location = re.search(r"(?m)^\*\*File:\*\*\s*`?([^`\r\n]+?)(?::(\d+))(?:[-\u2013](\d+))?`?\s*$", chunk)
-        if not location or not all(f"**{field}:**" in chunk for field in ("Severity", "Problem", "Evidence", "Suggested fix")):
-            raise ValueError("Incomplete native issue format")
-        path = Path(location[1])
+def review_metadata(text):
+    return all(re.match(
+        r"^(?:\*\*)?(?:Review(?:ed)? scope|Review limitations?|Validation(?: limitation)?|"
+        r"Scope(?: reviewed)?|Limitations?|Material limitation|Coverage limitations?)"
+        r"(?::|\*\*:)|^Reviewed\b|^The working tree is clean; reviewed\b|"
+        r"^Validation (?:was )?limited to\b|^\u2713 Review conducted following guidelines\b",
+        paragraph.strip(),
+    ) for paragraph in re.split(r"\n[ \t]*\n", text.strip()) if paragraph.strip())
+
+
+def issue_locations(chunk, repo):
+    location = re.search(
+        r"(?ms)^\*\*Files?:\*\*[ \t]*(.*?)\n(?=\*\*(?:Severity|Problem|Evidence|Suggested fix):\*\*)",
+        chunk,
+    )
+    if not location:
+        raise ValueError("Incomplete native issue format: missing file locations")
+    locations = []
+    for line in location[1].strip().splitlines():
+        value = re.sub(r"^[-*][ \t]+", "", line.strip()).strip("`")
+        match = re.fullmatch(r"(.+?):(\d+(?:[-\u2013]\d+)?(?:,[ \t]*\d+(?:[-\u2013]\d+)?)*)", value)
+        if not match:
+            raise ValueError("Unrecognized native issue location")
+        path = Path(match[1])
         path = (path if path.is_absolute() else repo / path).resolve()
         relative = path.relative_to(repo.resolve()).as_posix()
-        start, end = int(location[2]), int(location[3] or location[2])
-        if not path.is_file() or start < 1 or end < start or end > len(path.read_text().splitlines()):
+        if not path.is_file():
             raise ValueError("Native finding has an invalid HEAD location")
+        line_count = len(path.read_text().splitlines())
+        for span in match[2].split(","):
+            bounds = re.split(r"[-\u2013]", span.strip())
+            start, end = int(bounds[0]), int(bounds[-1])
+            if start < 1 or end < start or end > line_count:
+                raise ValueError("Native finding has an invalid HEAD location")
+            locations.append((relative, start, end))
+    if not locations:
+        raise ValueError("Incomplete native issue format: missing file locations")
+    return locations
+
+
+def findings_from_review(text, repo):
+    text = text.strip()
+    if re.search(r"(?i)\breview paused\b|\bno correctness review was performed\b", text):
+        raise ValueError("Native reviewer declined the review; refusing empty fallback")
+    chunks = re.split(r"(?m)^## Issue:\s*", text)
+    if len(chunks) < 2:
+        paragraphs = re.split(r"\n[ \t]*\n", text)
+        empty = [index for index, paragraph in enumerate(paragraphs) if paragraph.strip() in EMPTY_RESULTS]
+        if len(empty) == 1 and review_metadata("\n\n".join(
+            paragraph for index, paragraph in enumerate(paragraphs) if index != empty[0]
+        )):
+            return []
+        raise ValueError("Unrecognized native code-review output; refusing empty fallback")
+    if not review_metadata(chunks[0]):
+        raise ValueError("Unrecognized native review preamble")
+    findings = []
+    for chunk in chunks[1:]:
+        if not all(re.search(rf"(?m)^\*\*{field}:\*\*[ \t]*\S", chunk)
+                   for field in ("Severity", "Problem", "Evidence", "Suggested fix")):
+            raise ValueError("Incomplete native issue format")
+        # Keep one finding per issue; retain all other validated locations in its raw message.
+        relative, start, end = issue_locations(chunk, repo)[0]
         findings.append({
             "producer": "copilot-native-review", "file": relative,
             "start_line": start, "end_line": end, "message": "## Issue: " + chunk.strip(),
