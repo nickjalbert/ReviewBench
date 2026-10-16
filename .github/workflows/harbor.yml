@@ -116,11 +116,11 @@ jobs:
             .harbor/smoke/metric.py --output .harbor/smoke-metrics.json
           npm run harbor:onboard -- --dataset .harbor/smoke --output .harbor/repeated-kit \
             --custom-agent --environment docker
-          PYTHONPATH="$PWD/.harbor/repeated-kit:$PYTHONPATH" harbor run \
+          harbor run \
             -c .harbor/repeated-kit/job.json -p .harbor/smoke -a scripts.harbor.smoke_agent:EmptyReviewAgent \
-            -e docker -l 1 -k 2 -n 2 --plugin reviewbench_plugin:ReviewBenchPlugin \
+            -e docker -l 1 -k 2 -n 2 --plugin reviewbench_harbor.reviewbench_plugin:ReviewBenchPlugin \
             --job-name repeated-smoke --jobs-dir .harbor/jobs --yes
-          python .harbor/repeated-kit/check-job.py .harbor/jobs/repeated-smoke \
+          reviewbench-check-job .harbor/jobs/repeated-smoke \
             .harbor/smoke/metric.py --output .harbor/repeated-metrics.json
           python - <<'PY'
           import json
