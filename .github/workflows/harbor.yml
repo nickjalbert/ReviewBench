@@ -45,7 +45,15 @@ jobs:
       - name: Install pinned Harbor schema/packager only
         run: |
           python -m pip install 'pydantic>=2,<3' toml pathspec
-          python -m pip install --no-deps 'git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b'
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+          dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+          harbor = next(dependency for dependency in dependencies if dependency.startswith("harbor=="))
+          subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", harbor], check=True)
+          PY
       - run: python tests/harbor-format.test.py
       - name: Export and validate both datasets without network or inference
         shell: bash
@@ -80,8 +88,7 @@ jobs:
       - name: Install pinned Harbor runtime
         run: |
           python -m pip install uv
-          python -m pip install 'git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b'
-          python -m pip install 'json5==0.12.1'
+          python -m pip install .
       - name: Check native run controls with synthetic trials and no inference
         run: |
           python tests/harbor-run.test.py
@@ -93,7 +100,7 @@ jobs:
           tests="$PWD/tests"
           cd "$(mktemp -d)"
           unset PYTHONPATH
-          python -m pip install --no-deps "$wheel"
+          python -m pip install --force-reinstall --no-deps "$wheel"
           python -c "from reviewbench_harbor.reviewbench_plugin import ReviewBenchPlugin; from pathlib import Path; import reviewbench_harbor; root = Path(reviewbench_harbor.__file__).parent; assert all((root / name).is_file() for name in ('metric.py', 'check-job.py'))"
           python -c "from reviewbench_copilot.local_agent import NativeCopilotReview; from pathlib import Path; import reviewbench_copilot; assert (Path(reviewbench_copilot.__file__).parent / 'native_review.py').is_file()"
           reviewbench-check-job --help

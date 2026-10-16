@@ -7,7 +7,7 @@ to Harbor Hub. Execution uses CPU-only Linux x86-64 sandboxes; no GPU is needed.
 | Component | Version or reference |
 | --- | --- |
 | Public dataset | [`review-bench/reviewbench-public@v1`](https://hub.harborframework.com/datasets/review-bench/reviewbench-public) |
-| Harbor | `0.24.0`, commit `b53b8134e1241686dca7759af188f987ecc48e8b` |
+| Harbor | `0.24.0`, installed automatically from the package's dependency pin |
 | Reviewer CLI inside the sandbox | `1.0.96`, downloaded and SHA-256 verified by the adapter |
 | Host CLI used for login | `1.0.98` |
 | Judge | Anthropic `claude-opus-5`, via `api.anthropic.com` |
@@ -77,15 +77,34 @@ private adapter download and no host-side Node.js requirement.
 While this change is under review, install from this PR's public Git ref:
 
 ```bash
-uv tool install --force --python 3.12 \
-  --with "reviewbench-harbor @ git+https://github.com/review-bench/ReviewBench.git@refs/pull/51/head" \
-  --with-executables-from reviewbench-harbor \
-  "harbor @ git+https://github.com/harbor-framework/harbor.git@b53b8134e1241686dca7759af188f987ecc48e8b"
+uv tool install --force --python 3.12 --with-executables-from harbor \
+  "reviewbench-harbor @ git+https://github.com/review-bench/ReviewBench.git@refs/pull/51/head"
 ```
 
-This keeps the adapter, plugin, and Harbor in the same isolated Python
-environment. The reviewer image remains harness-neutral; the adapter uploads
-its verified CLI archive without requiring reviewer-side installation access.
+This installs Harbor, the adapter, plugin, and checkers in one isolated Python
+environment. ReviewBench's package metadata pins the compatible Harbor release;
+users do not need a Harbor Git commit or a separate runtime wheel URL.
+The reviewer image remains harness-neutral; the adapter uploads its verified
+CLI archive without requiring reviewer-side installation access.
+
+### Updating independently
+
+Updates are explicit, not automatic. Do not upgrade an environment while a job
+is running.
+
+| Change | User action |
+| --- | --- |
+| Runtime, adapter, or Harbor compatibility | Run `uv tool upgrade reviewbench-harbor`; the package selects its tested Harbor dependency |
+| Dataset, reference findings, or judge policy | Select the newly published dataset version, such as `review-bench/reviewbench-public@v2`, once available; normally no tool reinstall is needed |
+| Judge API key | Set `RB_HARBOR_JUDGE_KEY` for the next run; no installation change |
+
+The PR ref above is a temporary pre-release source, not an immutable release.
+Released installations should use a versioned ReviewBench package artifact.
+Published dataset versions keep their frozen judge and task identities:
+upgrading the runtime does not silently replace the judge or dataset, and a
+changed judge policy must use a new dataset version. Keep the package version
+and dataset version with run evidence; do not compare changed judge versions
+as if they were the same benchmark.
 
 ## 3. Authenticate and check readiness
 
@@ -104,7 +123,7 @@ Check the exact credential loader and Docker kernel capability before spending
 model requests:
 
 ```bash
-"$(uv tool dir)/harbor/bin/python" - <<'PY'
+"$(uv tool dir)/reviewbench-harbor/bin/python" - <<'PY'
 from harbor.environments.docker.docker import DockerEnvironment
 from reviewbench_copilot.local_agent import reviewer_token
 
